@@ -462,16 +462,12 @@ def _apply_parallax_correction(
     if gap_mm <= 0:
         return px_per_mm_h, px_per_mm_v
 
-    # Estimar distância câmera→grade via focal length e tamanho da grade
-    if camera_matrix is not None and grid_points is not None:
+    # Estimar distância câmera→grade via focal length e escala local calibrada
+    if camera_matrix is not None:
         focal_px = (camera_matrix[0, 0] + camera_matrix[1, 1]) / 2
-
-        # Tamanho da grade na imagem (pixels)
-        grid_width_px = np.max(grid_points[:, 0]) - np.min(grid_points[:, 0])
-        grid_width_mm = config.MDF_WIDTH_MM
-
-        # Distância = focal × (tamanho_real / tamanho_imagem)
-        dist_grade_mm = focal_px * (grid_width_mm / grid_width_px)
+        px_per_mm = (px_per_mm_h + px_per_mm_v) / 2.0
+        # Distância = focal_px / px_per_mm
+        dist_grade_mm = focal_px / px_per_mm
     else:
         # Estimativa conservadora: câmera a ~600mm da grade
         dist_grade_mm = 600.0

@@ -174,9 +174,7 @@ def cmd_convert(args):
     ]
 
     for raw_sub, conv_sub in raw_dirs:
-        raw_dir = session_dir / "raw" / raw_sub if "background" not in raw_sub else session_dir / raw_sub
-        # Adjust path: background is at session level, not under raw
-        # Actually let's check both locations for flexibility
+        # Ajusta caminhos para background (no nível da sessão) e peças (sob raw/)
         possible_raw_dirs = [
             session_dir / "raw" / raw_sub,
             session_dir / raw_sub,
@@ -368,7 +366,13 @@ def cmd_process(args):
                     # 3. Converter para mm e coletar resultados
                     for metrics_px in seg_results:
                         metrics_mm = metrology.convert_measurements(metrics_px, scale)
-                        metrics_mm["sample_id"] = sample_id
+                        
+                        # Se houver múltiplos contornos, adicionar sufixo para evitar colisão de chaves
+                        if len(seg_results) > 1:
+                            metrics_mm["sample_id"] = f"{sample_id}_{metrics_px['contour_index']}"
+                        else:
+                            metrics_mm["sample_id"] = sample_id
+                            
                         metrics_mm["session"] = args.session
                         metrics_mm["state"] = state
                         metrics_mm["view_mode"] = view

@@ -663,3 +663,68 @@ class TestIntegration:
         # (300px→260px → 120mm→104mm)
         shrinkage_w = comparisons[0]["shrinkage_width_pct"]
         assert 10 < shrinkage_w < 20  # Faixa esperada
+
+    def test_auto_inversion_detection(self):
+        """Testa se uma máscara invertida (objeto preto no fundo branco) é auto-corrigida."""
+        from segmentation import check_and_correct_inversion
+        # Criar máscara invertida (fundo branco=255, objeto preto=0 no centro)
+        mask = np.full((100, 100), 255, dtype=np.uint8)
+        cv2.rectangle(mask, (30, 30), (70, 70), 0, -1)
+
+        corrected = check_and_correct_inversion(mask)
+
+        # Deve ser invertida (objeto branco no fundo preto)
+        assert corrected[0, 0] == 0
+        assert corrected[50, 50] == 255
+
+    def test_contour_sorting_horizontal(self):
+        """Testa se múltiplos contornos são ordenados da esquerda para a direita."""
+        # Três retângulos com áreas de 10.000 px² (> 5.000 px² de limiar mínimo)
+        img = np.zeros((300, 800), dtype=np.uint8)
+        cv2.rectangle(img, (500, 100), (600, 200), 255, -1)  # Centroide X ≈ 550
+        cv2.rectangle(img, (100, 100), (200, 200), 255, -1)  # Centroide X ≈ 150
+        cv2.rectangle(img, (300, 100), (400, 200), 255, -1)  # Centroide X ≈ 350
+
+        color = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        results = segment(img, color, "sort_test", save_mask=False)
+
+        assert len(results) == 3
+        # Os resultados devem estar em ordem crescente de coordenada X (100, 300, 500)
+        x_coords = [r["bbox_x"] for r in results]
+        assert x_coords == [100, 300, 500]
+        assert results[0]["contour_index"] == 0
+        assert results[1]["contour_index"] == 1
+        assert results[2]["contour_index"] == 2
+
+    def test_parallax_correction_formula_precision(self):
+        """Testa a nova fórmula exata de correção de paralaxe baseada em focal_px/px_per_mm."""
+        from metrology import _apply_parallax_correction
+        
+        # Simular matriz da câmera com focal de 1000px
+        camera_matrix = np.array([
+            [1000.0, 0.0, 500.0],
+            [0.0, 1000.0, 500.0],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float32)
+        
+        px_per_mm_h = 2.0
+        px_per_mm_v = 2.0
+        
+        # dist_grade_mm = 1000 / 2.0 = 500.0 mm
+        # Se gap = 5mm:
+        # dist_peca_mm = 495.0 mm
+        # correction = 500.0 / 495.0 = 1.010101
+        
+        # Precisamos temporariamente mockar o gap no config
+        original_gap = config.SIDE_GRID_GAP_MM
+        config.SIDE_GRID_GAP_MM = 5.0
+        try:
+            h_corr, v_corr = _apply_parallax_correction(
+                px_per_mm_h, px_per_mm_v, camera_matrix=camera_matrix
+            )
+            expected_corr = 500.0 / 495.0
+            assert abs(h_corr - px_per_mm_h * expected_corr) < 1e-5
+            assert abs(v_corr - px_per_mm_v * expected_corr) < 1e-5
+        finally:
+            config.SIDE_GRID_GAP_MM = original_gap
+

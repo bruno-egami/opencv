@@ -354,6 +354,47 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
     return metrics
 
 
+def check_and_correct_inversion(mask: np.ndarray) -> np.ndarray:
+    """
+    Verifica se a máscara binária está invertida (objeto preto e fundo branco)
+    e inverte se necessário.
+
+    Como o objeto de interesse está posicionado no centro da imagem, as bordas
+    exteriores da máscara devem corresponder ao fundo (cor preta / 0). Se a
+    maioria dos pixels das bordas for branca (255), a máscara é invertida.
+    """
+    h, w = mask.shape[:2]
+    # Definir uma borda de 5% da largura/altura
+    border_y = max(1, int(h * 0.05))
+    border_x = max(1, int(w * 0.05))
+
+    # Extrair pixels da borda (topo, base, esquerda, direita)
+    top_pixels = mask[0:border_y, :]
+    bottom_pixels = mask[h-border_y:h, :]
+    left_pixels = mask[:, 0:border_x]
+    right_pixels = mask[:, w-border_x:w]
+
+    # Calcular a média dos pixels de borda
+    total_border_pixels = (top_pixels.size + bottom_pixels.size + 
+                           left_pixels.size + right_pixels.size)
+    white_border_pixels = (cv2.countNonZero(top_pixels) + 
+                           cv2.countNonZero(bottom_pixels) + 
+                           cv2.countNonZero(left_pixels) + 
+                           cv2.countNonZero(right_pixels))
+
+    border_white_ratio = white_border_pixels / total_border_pixels
+
+    # Se mais de 50% dos pixels da borda são brancos, a máscara está invertida
+    if border_white_ratio > 0.5:
+        logger.info(
+            f"  Detecção de inversão de máscara: {border_white_ratio:.1%} "
+            f"dos pixels da borda são brancos. Invertendo máscara..."
+        )
+        return cv2.bitwise_not(mask)
+
+    return mask
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Função principal de segmentação
 # ──────────────────────────────────────────────────────────────────────────────
@@ -410,6 +451,7 @@ def segment(
                 candidate_mask = _apply_strategy(
                     strat_name, gray_blurred, image_color, bg
                 )
+                candidate_mask = check_and_correct_inversion(candidate_mask)
                 candidate_mask = postprocess_mask(candidate_mask)
                 quality = evaluate_mask_quality(candidate_mask)
 
@@ -434,6 +476,7 @@ def segment(
     else:
         # Estratégia específica
         mask = _apply_strategy(strategy, gray_blurred, image_color, background)
+        mask = check_and_correct_inversion(mask)
         mask = postprocess_mask(mask)
 
     # Detectar contornos
@@ -446,6 +489,19 @@ def segment(
         c for c in contours
         if cv2.contourArea(c) >= config.MIN_CONTOUR_AREA_PX
     ]
+
+    # Ordenar contornos da esquerda para a direita (centroide X)
+    # para consistência caso haja múltiplos corpos de prova na cena
+    if len(valid_contours) > 1:
+        def get_contour_cx(c):
+            M = cv2.moments(c)
+            if M["m00"] > 0:
+                return M["m10"] / M["m00"]
+            return cv2.boundingRect(c)[0]  # Fallback
+        valid_contours = sorted(valid_contours, key=get_contour_cx)
+        logger.info(
+            f"  Ordenados {len(valid_contours)} contornos da esquerda para a direita."
+        )
 
     if not valid_contours:
         _raise_segmentation_error(image_name, strategy, background)
