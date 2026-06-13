@@ -2,7 +2,7 @@
 
 Este repositório é um **fork** da biblioteca original **OpenCV (Open Source Computer Vision Library)** contendo um subprojeto específico para metrologia dimensional e análise de retração de corpos de prova cerâmicos fabricados por manufatura aditiva (FDM/DIW).
 
-O código do pipeline de análise está localizado na pasta [ceramic_analysis/](file:///d:/GitHub/OpenCV/ceramic_analysis/).
+O código do pipeline de análise está localizado na pasta [ceramic_analysis/](ceramic_analysis/).
 
 ---
 
@@ -19,9 +19,8 @@ Para contribuir com a biblioteca base OpenCV, leia as [diretrizes de contribuiç
 
 ## Ceramic Analysis Pipeline (Instruções do Fork)
 
-O subprojeto contido no diretório `ceramic_analysis/` foi desenvolvido para comparar automaticamente as dimensões de peças cerâmicas no estado **úmido** (pós-impressão) e **seco** (pós-secagem), calculando a **retração percentual** em cada dimensão:
+O subprojeto contido no diretório `ceramic_analysis/` foi desenvolvido para comparar automaticamente as dimensões de peças cerâmicas no estado **úmido** (pós-impressão) e **seco** (pós-secagem), além de permitir a **comparação de fidelidade tridimensional com o modelo CAD de referência (STL e STEP)**, calculando a **retração percentual** e os desvios geométricos.
 
-$$\Delta L = \frac{L_{\text{úmido}} - L_{\text{seco}}}{L_{\text{úmido}}} \times 100$$
 
 ### Funcionalidades
 
@@ -32,7 +31,9 @@ $$\Delta L = \frac{L_{\text{úmido}} - L_{\text{seco}}}{L_{\text{úmido}}} \time
 - 📏 **Metrologia dual-axis** — Grade gravada a laser no MDF → `px_per_mm` independente em X e Y
 - 📐 **Correção de paralaxe** — Retificação física para vistas laterais com grade posicionada atrás da peça
 - 🧊 **Dimensões 3D** — Combinação de vistas de cima (X-Y) e lateral (X-Z)
-- 📊 **Exportação CSV** — Medições, retração percentual e metadados de escala
+- 🖥️ **Comparação CAD (STL/STEP)** — Suporte nativo a STEP do **Autodesk Inventor** via CadQuery, orientação automática por PCA com fallback para OBB, registro ICP (com suporte a simetria de rotação/translação) e extração de furos/cavidades.
+- 🎨 **Mapa de Desvio Visual** — Mapa de calor sobreposto na peça indicando desvios críticos (Vermelho), toleráveis (Amarelo) e ideais (Verde), legenda completa de metrologia.
+- 📊 **Exportação CSV** — Medições, retração percentual, desvios CAD e metadados de escala
 - 🖼️ **Imagens anotadas** — Contornos e dimensões sobrepostos para validação visual
 - ✅ **Validação ImageJ** — Máscaras binárias salvas em PNG para inspeção independente
 
@@ -41,17 +42,18 @@ $$\Delta L = \frac{L_{\text{úmido}} - L_{\text{seco}}}{L_{\text{úmido}}} \time
 ```
 ceramic_analysis/
 ├── pipeline.py               # CLI principal (ponto de entrada)
-├── config.py                 # Parâmetros ajustáveis
+├── config.py                 # Parâmetros ajustáveis (e limite de desvios CAD)
+├── cad_compare.py            # NOVO: Módulo de comparação com modelos CAD (STL/STEP)
 ├── raw_converter.py          # .NEF → TIFF 16-bit
 ├── calibrate.py              # Calibração de lente (checkerboard)
 ├── preprocessing.py          # Undistort, equalização, filtro
 ├── segmentation.py           # Segmentação (com auto-inversão e ordenação)
 ├── metrology.py              # Grade → escala px/mm + paralaxe
 ├── analysis.py               # Retração, CSV, anotações
-├── requirements.txt
+├── requirements.txt          # Inclui dependências de CAD (trimesh, cadquery, shapely, scipy)
 ├── data/                     # Imagens do checkerboard, background e sessões
 └── tests/
-    └── test_pipeline.py      # 44 testes unitários
+    └── test_pipeline.py      # 63 testes unitários
 ```
 
 ### Instalação e Preparação
@@ -78,33 +80,33 @@ Saída: `output/calibration_params.yaml`. Meta: RMS de reprojeção < 0.5 px.
 ```bash
 python pipeline.py create-session --session 20250612
 ```
-Isso cria a estrutura de diretórios em `data/sessions/session_20250612/`. Copie os arquivos `.NEF` para as subpastas apropriadas (`background/`, `raw/wet/`, `raw/dry/`).
+Isso cria a estrutura de diretórios em `data/sessions/session_20250612/` incluindo a pasta `cad/`. Copie os arquivos `.NEF` e os arquivos do modelo CAD para suas respectivas pastas.
 
-#### 3. Executar o pipeline completo
+#### 3. Executar o pipeline completo (com Comparação CAD)
+Ao fornecer o modelo CAD, o pipeline rodará automaticamente a comparação geométrica tridimensional na 5ª etapa:
 ```bash
-python pipeline.py full --session 20250612
+python pipeline.py full --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl
 ```
-Este comando executa a conversão RAW, detecção de escala, pré-processamento, segmentação das peças, metrologia em mm e cálculo comparativo de retração.
 
-#### 4. Comandos Individuais
+#### 4. Comandos Individuais e CAD
 ```bash
 # Apenas processar sem análise comparativa
 python pipeline.py process --session 20250612 --view top --state wet
 
-# Especificar estratégia de segmentação
-python pipeline.py process --session 20250612 --strategy lab
+# Comparar as fotos processadas de uma sessão com um modelo CAD (STL ou STEP)
+python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20250612/cad/peca.step --view top front
 
-# Comparar úmido vs seco e gerar CSV
-python pipeline.py analyze --session 20250612
+# Rodar cad-compare em lote com limite de tolerância de desvio customizado (ex: 1.5mm)
+python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl --view all --tolerance 1.5
 ```
 
 ### Testes Unitários
 
-Para garantir a corretude do código e as novas validações matemáticas:
+Para garantir a corretude do código e as novas validações matemáticas e de geometria CAD:
 ```bash
 python -m pytest tests/test_pipeline.py -v
 ```
-Todos os 44 testes unitários utilizam dados sintéticos e não exigem conexões físicas ou imagens reais.
+Todos os 63 testes unitários utilizam dados sintéticos e não exigem conexões físicas ou imagens reais.
 
 ---
 

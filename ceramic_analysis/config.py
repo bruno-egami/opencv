@@ -117,3 +117,38 @@ OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 CALIBRATION_FILE = os.path.join(PROJECT_ROOT, "output", "calibration_params.yaml")
 RESULTS_CSV = os.path.join(PROJECT_ROOT, "output", "results.csv")
 ANNOTATED_DIR = os.path.join(PROJECT_ROOT, "output", "annotated")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPARAÇÃO COM MODELO CAD
+# ══════════════════════════════════════════════════════════════════════════════
+CAD_MODEL_PATH = None               # Caminho para o modelo (.stl ou .step/.stp)
+                                    # Pode ser sobrescrito via CLI: --cad model.stl
+
+# ── Projeção ──
+CAD_PROJECTION_PITCH = 0.1         # Resolução da rasterização (mm/pixel)
+
+# ── Tessellation STEP ──
+CAD_STEP_TOLERANCE = 0.05          # Tolerância linear para STEP (mm)
+CAD_STEP_ANGULAR_TOLERANCE = 0.1   # Tolerância angular para curvas (rad)
+
+# ── Registro (alinhamento) ──
+CAD_REGISTRATION_METHOD = "icp"     # "icp", "centroid", "bbox_center"
+CAD_ICP_MAX_ITERATIONS = 50        # Iterações para prismas/cilindros
+CAD_ICP_MAX_ITERATIONS_ORGANIC = 100  # Iterações para formas orgânicas
+CAD_ICP_TOLERANCE = 0.01           # Convergência em mm
+
+# ── Tolerância de desvio ──
+CAD_DEVIATION_TOLERANCE_MM = 1.0   # Limiar para cores no mapa de desvio
+
+# ── Orientação automática ──
+CAD_AUTO_ORIENT = True
+CAD_SYMMETRY_THRESHOLD = 0.05      # Limiar para simetria axial (5%)
+
+# ── Reamostragem de contorno ──
+CAD_RESAMPLE_SPACING_MM = 0.5     # Espaçamento base entre pontos
+CAD_RESAMPLE_AUTO_ADJUST = True    # Auto-ajustar pela complexidade
+
+# ── Caminhos ──
+CAD_DIR = os.path.join(PROJECT_ROOT, "data", "cad")
+CAD_COMPARISON_DIR = os.path.join(OUTPUT_DIR, "cad_comparison")
+

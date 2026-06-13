@@ -48,6 +48,7 @@ import preprocessing
 import segmentation
 import metrology
 import analysis
+import cad_compare
 
 logger = logging.getLogger("ceramic_analysis")
 
@@ -82,6 +83,7 @@ def create_session_structure(session_id: str) -> Path:
     session_dir = get_session_dir(session_id)
 
     dirs = [
+        session_dir / "cad",
         session_dir / "background" / "top",
         session_dir / "background" / "side",
         session_dir / "raw" / "wet" / "top",
@@ -497,6 +499,221 @@ def cmd_analyze(args):
             )
 
 
+def cmd_cad_compare(args):
+    """Compara as peças segmentadas da sessão com um modelo CAD de referência."""
+    session_dir = get_session_dir(args.session)
+
+    if not session_dir.exists():
+        logger.error(f"Sessão não encontrada: {session_dir}")
+        return
+
+    # 1. Carrega o modelo CAD
+    logger.info(f"Carregando modelo CAD: {args.cad}")
+    mesh = cad_compare.load_cad_model(args.cad)
+
+    # 2. Detecta orientação e alinha
+    logger.info("Detectando orientação automática do CAD...")
+    orientation = cad_compare.detect_orientation(mesh)
+    aligned_mesh = cad_compare.align_mesh(mesh, orientation)
+    logger.info(f"  Classe da Forma: {orientation['shape_class'].upper()}")
+    logger.info(f"  Dimensões (largura, profundidade, altura): {orientation['extents_mm']} mm")
+    logger.info(f"  Simetria detectada: {orientation['is_symmetric']} (eixo: {orientation['symmetry_axis']})")
+
+    # 3. Expandir vistas a processar
+    views = ["top", "front", "back", "left", "right"] if "all" in args.view else args.view
+
+    # 4. Extrai medições executando o processamento
+    logger.info("Processando imagens da sessão para extrair contornos das fotos...")
+    proc_args = argparse.Namespace(
+        session=args.session,
+        view="both",  # Processa ambas as vistas (top e side)
+        state=args.state,
+        strategy="auto",
+        perspective_correction=False,
+        no_annotate=True
+    )
+    measurements = cmd_process(proc_args)
+
+    if not measurements:
+        logger.error("Nenhuma medição física encontrada na sessão para comparação.")
+        return
+
+    all_results = []
+    tolerance_mm = args.tolerance if args.tolerance is not None else config.CAD_DEVIATION_TOLERANCE_MM
+
+    # Mapeamento de vistas CAD para as pastas das fotos
+    CAD_TO_PHOTO_VIEW = {
+        "top": "top",
+        "front": "side",
+        "back": "side",
+        "left": "side",
+        "right": "side",
+    }
+
+    for view in views:
+        logger.info(f"\nComparando vista CAD: {view.upper()}")
+
+        # Projetar CAD
+        logger.info("  Projetando silhueta CAD em 2D...")
+        cad_ext_mm, cad_holes_mm, cad_mask, cad_bbox = cad_compare.project_to_2d(
+            aligned_mesh, view=view
+        )
+
+        # Complexidade e reamostragem do CAD
+        complexity = cad_compare.compute_shape_complexity(cad_ext_mm)
+        spacing = config.CAD_RESAMPLE_SPACING_MM
+        if config.CAD_RESAMPLE_AUTO_ADJUST and complexity > 20:
+            spacing = max(0.2, spacing * (20.0 / complexity))
+
+        cad_ext_mm = cad_compare.resample_contour(cad_ext_mm, spacing)
+
+        # Filtrar medições da foto correspondentes a esta vista
+        photo_view = CAD_TO_PHOTO_VIEW[view]
+        matching_measurements = [m for m in measurements if m["view_mode"] == photo_view]
+
+        if not matching_measurements:
+            logger.warning(f"  Nenhuma foto de vista '{photo_view}' disponível para comparação com a vista CAD '{view}'")
+            continue
+
+        for m in matching_measurements:
+            state = m["state"]
+            sample_id = m["sample_id"]
+            logger.info(f"  Comparando com amostra '{sample_id}' ({state})")
+
+            # Carregar a imagem física
+            img_path = session_dir / "converted" / state / photo_view / m["source_file"]
+            photo_image = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+            if photo_image is None:
+                logger.error(f"  Não foi possível ler imagem: {img_path}")
+                continue
+
+            if photo_image.dtype == np.uint16:
+                photo_image = preprocessing.normalize_16bit_to_8bit(photo_image)
+
+            # Undistort
+            try:
+                mtx, dist = calibrate_module.load_calibration()
+                photo_image = preprocessing.undistort_image(photo_image, mtx, dist)
+            except FileNotFoundError:
+                pass
+
+            # Extrair contorno da foto em mm
+            photo_contour_px = np.squeeze(m["contour"])
+            if len(photo_contour_px.shape) != 2:
+                logger.error(f"  Contorno da amostra {sample_id} está no formato incorreto.")
+                continue
+
+            px_h = m["px_per_mm_h"]
+            px_v = m["px_per_mm_v"]
+
+            photo_contour_mm = np.zeros_like(photo_contour_px, dtype=np.float64)
+            photo_contour_mm[:, 0] = photo_contour_px[:, 0] / px_h
+            photo_contour_mm[:, 1] = photo_contour_px[:, 1] / px_v
+
+            # Reamostrar contorno da foto
+            photo_contour_mm = cad_compare.resample_contour(photo_contour_mm, spacing)
+
+            # Registrar contornos (alinhamento CAD -> Foto)
+            reg_method = args.registration if args.registration is not None else config.CAD_REGISTRATION_METHOD
+            cad_aligned_mm, transform = cad_compare.register_contours(
+                cad_ext_mm, photo_contour_mm,
+                method=reg_method,
+                shape_class=orientation["shape_class"]
+            )
+
+            # Comparar
+            # Para simplificar, assumimos que os furos da foto coincidem com a presença no CAD
+            metrics = cad_compare.compare_contours(
+                cad_aligned_mm, photo_contour_mm, cad_bbox,
+                cad_holes=cad_holes_mm,
+                shape_class=orientation["shape_class"]
+            )
+
+            # Converter contornos alinhados de volta para pixel para desenho
+            cad_contour_px = np.zeros_like(cad_aligned_mm)
+            cad_contour_px[:, 0] = cad_aligned_mm[:, 0] * px_h
+            cad_contour_px[:, 1] = cad_aligned_mm[:, 1] * px_v
+
+            cad_holes_px = []
+            if cad_holes_mm:
+                for hole_mm in cad_holes_mm:
+                    hole_aligned_mm = cad_compare.apply_registration(hole_mm, transform)
+                    hole_px = np.zeros_like(hole_aligned_mm)
+                    hole_px[:, 0] = hole_aligned_mm[:, 0] * px_h
+                    hole_px[:, 1] = hole_aligned_mm[:, 1] * px_v
+                    cad_holes_px.append(hole_px)
+
+            # Salvar imagem de desvio
+            out_dir = Path(config.OUTPUT_DIR) / "cad_comparison" / args.session
+            out_path = out_dir / f"{sample_id}_{state}_{view}_deviation.png"
+            cad_compare.generate_deviation_map(
+                photo_image, cad_contour_px, photo_contour_px,
+                metrics["per_point_distances_mm"],
+                str(out_path),
+                px_per_mm_h=px_h,
+                px_per_mm_v=px_v,
+                tolerance_mm=tolerance_mm,
+                cad_holes_px=cad_holes_px,
+                metrics=metrics
+            )
+
+            # Adicionar aos resultados globais
+            res_dict = {
+                "sample_id": sample_id,
+                "session": args.session,
+                "cad_view": view,
+                "photo_view": photo_view,
+                "state": state,
+                "cad_model": os.path.basename(args.cad),
+                "shape_class": orientation["shape_class"],
+                "shape_complexity": metrics["shape_complexity"],
+                "cad_bbox_w_mm": metrics["cad_bbox_w_mm"],
+                "cad_bbox_h_mm": metrics["cad_bbox_h_mm"],
+                "cad_area_mm2": metrics["cad_area_mm2"],
+                "measured_bbox_w_mm": metrics["measured_bbox_w_mm"],
+                "measured_bbox_h_mm": metrics["measured_bbox_h_mm"],
+                "measured_area_mm2": metrics["measured_area_mm2"],
+                "bbox_w_deviation_mm": metrics["bbox_w_deviation_mm"],
+                "bbox_h_deviation_mm": metrics["bbox_h_deviation_mm"],
+                "bbox_w_deviation_pct": metrics["bbox_w_deviation_pct"],
+                "bbox_h_deviation_pct": metrics["bbox_h_deviation_pct"],
+                "area_deviation_pct": metrics["area_deviation_pct"],
+                "hausdorff_mm": metrics["hausdorff_mm"],
+                "mean_deviation_mm": metrics["mean_deviation_mm"],
+                "deviation_std_mm": metrics["deviation_std_mm"],
+                "deviation_p95_mm": metrics["deviation_p95_mm"],
+                "iou": metrics["iou"],
+                "registration_method": transform["method_used"],
+                "registration_rotation_deg": transform["rotation_deg"],
+                "registration_rms_mm": transform["rms_error_mm"],
+                "auto_oriented": config.CAD_AUTO_ORIENT,
+                "cad_extents_mm": f"{orientation['extents_mm'][0]:.2f}x{orientation['extents_mm'][1]:.2f}x{orientation['extents_mm'][2]:.2f}"
+            }
+
+            if "diameter_cad_mm" in metrics:
+                res_dict.update({
+                    "diameter_cad_mm": metrics["diameter_cad_mm"],
+                    "diameter_photo_mm": metrics["diameter_photo_mm"],
+                    "diameter_deviation_mm": metrics["diameter_deviation_mm"],
+                    "diameter_deviation_pct": metrics["diameter_deviation_pct"],
+                    "concentricity_mm": metrics["concentricity_mm"]
+                })
+
+            res_dict.update({
+                "n_holes_cad": metrics["n_holes_cad"],
+                "n_holes_photo": metrics["n_holes_photo"],
+                "holes_matched": 1 if metrics["holes_matched"] else 0,
+                "holes_iou": metrics.get("holes_iou", metrics["iou"])
+            })
+
+            all_results.append(res_dict)
+
+    if all_results:
+        csv_path = Path(config.OUTPUT_DIR) / f"cad_comparison_{args.session}.csv"
+        analysis.export_csv(all_results, str(csv_path), columns=analysis.CSV_CAD_COLUMNS)
+        logger.info(f"\n✓ {len(all_results)} resultado(s) da comparacao CAD salvo(s) em {csv_path}")
+
+
 def cmd_full(args):
     """Executa o pipeline completo."""
     logger.info(f"{'═'*60}")
@@ -505,7 +722,7 @@ def cmd_full(args):
 
     # 1. Converter RAW
     logger.info(f"\n{'═'*60}")
-    logger.info("ETAPA 1/4: Conversão RAW → TIFF")
+    logger.info("ETAPA 1/5: Conversão RAW → TIFF")
     logger.info(f"{'═'*60}")
     cmd_convert(args)
 
@@ -513,7 +730,7 @@ def cmd_full(args):
     cal_file = Path(config.CALIBRATION_FILE)
     if not cal_file.exists():
         logger.info(f"\n{'═'*60}")
-        logger.info("ETAPA 2/4: Calibração da Lente")
+        logger.info("ETAPA 2/5: Calibração da Lente")
         logger.info(f"{'═'*60}")
         cmd_calibrate(args)
     else:
@@ -521,15 +738,22 @@ def cmd_full(args):
 
     # 3. Processar
     logger.info(f"\n{'═'*60}")
-    logger.info("ETAPA 3/4: Processamento (pré-proc + segmentação + metrologia)")
+    logger.info("ETAPA 3/5: Processamento (pré-proc + segmentação + metrologia)")
     logger.info(f"{'═'*60}")
     cmd_process(args)
 
     # 4. Analisar
     logger.info(f"\n{'═'*60}")
-    logger.info("ETAPA 4/4: Análise Comparativa")
+    logger.info("ETAPA 4/5: Análise Comparativa de Retração")
     logger.info(f"{'═'*60}")
     cmd_analyze(args)
+
+    # 5. Comparação CAD (Opcional)
+    if hasattr(args, "cad") and args.cad:
+        logger.info(f"\n{'═'*60}")
+        logger.info("ETAPA 5/5: Comparação de Peças com Modelo CAD")
+        logger.info(f"{'═'*60}")
+        cmd_cad_compare(args)
 
     logger.info(f"\n{'═'*60}")
     logger.info("PIPELINE CONCLUÍDO")
@@ -537,6 +761,8 @@ def cmd_full(args):
     logger.info(f"  Resultados em: {config.OUTPUT_DIR}")
     logger.info(f"  Máscaras em:   {config.MASKS_DIR}")
     logger.info(f"  Anotações em:  {config.ANNOTATED_DIR}")
+    if hasattr(args, "cad") and args.cad:
+        logger.info(f"  Desvios CAD em: {Path(config.OUTPUT_DIR) / 'cad_comparison'}")
 
 
 def cmd_create_session(args):
@@ -547,7 +773,8 @@ def cmd_create_session(args):
         f"  {session_dir}\n\n"
         f"Próximos passos:\n"
         f"  1. Copie os .NEF para os diretórios apropriados\n"
-        f"  2. Execute: python pipeline.py full --session {args.session}"
+        f"  2. Se desejar usar comparação CAD, copie o modelo para {session_dir / 'cad'}\n"
+        f"  3. Execute: python pipeline.py full --session {args.session} [--cad {session_dir / 'cad' / 'modelo.stl'}]"
     )
 
 
@@ -640,6 +867,29 @@ Exemplos:
     )
     p_full.add_argument("--perspective-correction", action="store_true")
     p_full.add_argument("--no-annotate", action="store_true", default=False)
+    p_full.add_argument("--cad", default=None, help="Caminho para o modelo CAD (.stl/.step/.stp) para comparacao")
+    p_full.add_argument(
+        "--view-cad", nargs="+", dest="view_cad",
+        choices=["top", "front", "back", "left", "right", "all"],
+        default=["top", "front"],
+        help="Vista(s) do CAD a comparar (default: top front)"
+    )
+    p_full.add_argument("--registration", choices=["icp", "centroid", "bbox_center"], default=None)
+    p_full.add_argument("--tolerance", type=float, default=None, help="Tolerancia limite de desvio (mm)")
+
+    # cad-compare
+    p_cad = subparsers.add_parser("cad-compare", help="Compara pecas com modelo CAD")
+    p_cad.add_argument("--session", required=True, help="ID da sessão")
+    p_cad.add_argument("--cad", required=True, help="Caminho para o modelo CAD (.stl/.step/.stp)")
+    p_cad.add_argument(
+        "--view", nargs="+",
+        choices=["top", "front", "back", "left", "right", "all"],
+        default=["top", "front"],
+        help="Vista(s) a comparar (default: top front)"
+    )
+    p_cad.add_argument("--state", choices=["wet", "dry", "both"], default="both")
+    p_cad.add_argument("--registration", choices=["icp", "centroid", "bbox_center"], default=None)
+    p_cad.add_argument("--tolerance", type=float, default=None, help="Tolerancia limite de desvio (mm)")
 
     return parser
 
@@ -660,6 +910,7 @@ def main():
         "calibrate": cmd_calibrate,
         "process": cmd_process,
         "analyze": cmd_analyze,
+        "cad-compare": cmd_cad_compare,
         "full": cmd_full,
     }
 

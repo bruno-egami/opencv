@@ -272,6 +272,32 @@ CSV_SHRINKAGE_COLUMNS = [
     "dry_px_per_mm_h", "dry_px_per_mm_v", "dry_anisotropy",
 ]
 
+CSV_CAD_COLUMNS = [
+    "sample_id", "session", "cad_view", "photo_view", "state",
+    "cad_model", "shape_class", "shape_complexity",
+    # Dimensões CAD
+    "cad_bbox_w_mm", "cad_bbox_h_mm", "cad_area_mm2",
+    # Dimensões medidas
+    "measured_bbox_w_mm", "measured_bbox_h_mm", "measured_area_mm2",
+    # Desvios dimensionais
+    "bbox_w_deviation_mm", "bbox_h_deviation_mm",
+    "bbox_w_deviation_pct", "bbox_h_deviation_pct",
+    "area_deviation_pct",
+    # Desvios geométricos (contorno)
+    "hausdorff_mm", "mean_deviation_mm", "deviation_std_mm", "deviation_p95_mm",
+    "iou",
+    # Diâmetro (axissimétricos)
+    "diameter_cad_mm", "diameter_photo_mm",
+    "diameter_deviation_mm", "diameter_deviation_pct",
+    "concentricity_mm",
+    # Furos (orgânicas)
+    "n_holes_cad", "n_holes_photo", "holes_matched", "holes_iou",
+    # Registro
+    "registration_method", "registration_rotation_deg", "registration_rms_mm",
+    # Orientação
+    "auto_oriented", "cad_extents_mm",
+]
+
 
 def export_csv(data: list, output_path: str = None, columns: list = None):
     """
@@ -291,11 +317,14 @@ def export_csv(data: list, output_path: str = None, columns: list = None):
 
     # Auto-detectar colunas se não especificadas
     if columns is None:
-        # Verificar se são dados de retração ou medição individual
+        # Verificar se são dados de retração, comparação CAD ou medição individual
         if "shrinkage_width_pct" in data[0]:
             columns = CSV_SHRINKAGE_COLUMNS
+        elif "hausdorff_mm" in data[0]:
+            columns = CSV_CAD_COLUMNS
         else:
             columns = CSV_COLUMNS
+
 
     # Filtrar colunas que existem nos dados
     available_columns = [c for c in columns if any(c in d for d in data)]

@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
+import cad_compare
 from segmentation import (
     segment_background_sub,
     segment_lab,
@@ -728,3 +729,232 @@ class TestIntegration:
         finally:
             config.SIDE_GRID_GAP_MM = original_gap
 
+
+class TestCadComparison:
+    def test_load_stl(self):
+        import trimesh
+        # Cria um cubo 40x20x15 sintético
+        box = trimesh.creation.box((40, 20, 15))
+        with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            box.export(tmp_path)
+            mesh = cad_compare.load_cad_model(tmp_path)
+            assert len(mesh.vertices) > 0
+            assert len(mesh.faces) > 0
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_load_step_extension(self, monkeypatch):
+        import trimesh
+        # Mock de _load_step para testar o direcionamento de extensão sem precisar de arquivo STEP real
+        called = False
+        def mock_load_step(filepath, tolerance, angular_tolerance):
+            nonlocal called
+            called = True
+            return trimesh.creation.box((10, 10, 10))
+            
+        monkeypatch.setattr(cad_compare, "_load_step", mock_load_step)
+        
+        with tempfile.NamedTemporaryFile(suffix=".step", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(b"dummy step content")
+            mesh = cad_compare.load_cad_model(tmp_path)
+            assert called
+            assert len(mesh.vertices) > 0
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_detect_orientation_prism(self):
+        import trimesh
+        box = trimesh.creation.box((40, 20, 15))
+        orientation = cad_compare.detect_orientation(box)
+        assert orientation["shape_class"] == "prismatic"
+        assert not orientation["is_symmetric"]
+        
+    def test_detect_orientation_cylinder(self):
+        import trimesh
+        cyl = trimesh.creation.cylinder(radius=10, height=30)
+        orientation = cad_compare.detect_orientation(cyl)
+        assert orientation["shape_class"] == "axisymmetric"
+        assert orientation["is_symmetric"]
+        
+    def test_detect_orientation_organic(self):
+        import trimesh
+        sph = trimesh.creation.icosphere(subdivisions=2, radius=10)
+        orientation = cad_compare.detect_orientation(sph)
+        assert orientation["shape_class"] == "organic"
+
+    def test_align_mesh_rotated(self):
+        import trimesh
+        box = trimesh.creation.box((40, 20, 15))
+        # Rotação de 45 graus sobre Z
+        rad = np.radians(45)
+        c, s = np.cos(rad), np.sin(rad)
+        rot = np.eye(4)
+        rot[:3, :3] = [[c, -s, 0], [s, c, 0], [0, 0, 1]]
+        box.apply_transform(rot)
+        
+        orientation = cad_compare.detect_orientation(box)
+        aligned = cad_compare.align_mesh(box, orientation)
+        
+        extents = aligned.bounds[1] - aligned.bounds[0]
+        sorted_extents = sorted(extents)
+        assert abs(sorted_extents[0] - 15) < 1.0
+        assert abs(sorted_extents[1] - 20) < 1.0
+        assert abs(sorted_extents[2] - 40) < 1.0
+
+    def test_project_top_prism(self):
+        import trimesh
+        box = trimesh.creation.box((40, 20, 15))
+        ext, holes, mask, bbox = cad_compare.project_to_2d(box, "top")
+        assert abs(bbox["width_mm"] - 40) < 1e-3
+        assert abs(bbox["height_mm"] - 20) < 1e-3
+        assert len(ext) > 0
+        assert len(holes) == 0
+        
+    def test_project_front_prism(self):
+        import trimesh
+        box = trimesh.creation.box((40, 20, 15))
+        ext, holes, mask, bbox = cad_compare.project_to_2d(box, "front")
+        assert abs(bbox["width_mm"] - 40) < 1e-3
+        assert abs(bbox["height_mm"] - 15) < 1e-3
+        
+    def test_project_left_prism(self):
+        import trimesh
+        box = trimesh.creation.box((40, 20, 15))
+        ext, holes, mask, bbox = cad_compare.project_to_2d(box, "left")
+        assert abs(bbox["width_mm"] - 20) < 1e-3
+        assert abs(bbox["height_mm"] - 15) < 1e-3
+        
+    def test_project_top_cylinder(self):
+        import trimesh
+        cyl = trimesh.creation.cylinder(radius=10, height=30)
+        ext, holes, mask, bbox = cad_compare.project_to_2d(cyl, "top")
+        assert abs(bbox["width_mm"] - 20) < 0.5
+        assert abs(bbox["height_mm"] - 20) < 0.5
+        
+    def test_project_with_holes(self, monkeypatch):
+        import trimesh
+        from shapely.geometry import Polygon as ShapelyPolygon
+        
+        ext_coords = [(0, 0), (20, 0), (20, 20), (0, 20)]
+        hole_coords = [(5, 5), (15, 5), (15, 15), (5, 15)]
+        poly_with_hole = ShapelyPolygon(ext_coords, [hole_coords])
+        
+        class MockPath2D:
+            def __init__(self, polygons):
+                self.polygons_full = polygons
+                
+        mock_path = MockPath2D([poly_with_hole])
+        monkeypatch.setattr(trimesh.Trimesh, "projected", lambda self, normal: mock_path)
+        
+        box = trimesh.creation.box((20, 20, 20))
+        ext, holes, mask, bbox = cad_compare.project_to_2d(box, "top")
+        
+        assert len(holes) == 1
+        min_h = np.min(holes[0], axis=0)
+        max_h = np.max(holes[0], axis=0)
+        assert np.allclose(min_h, [5, 5])
+        assert np.allclose(max_h, [15, 15])
+
+    def test_resample_contour(self):
+        rect = np.array([(0, 0), (40, 0), (40, 20), (0, 20)])
+        resampled = cad_compare.resample_contour(rect, target_spacing_mm=1.0)
+        assert 115 <= len(resampled) <= 125
+        
+        pts = np.vstack([resampled, resampled[0]])
+        dists = np.sqrt(np.sum(np.diff(pts, axis=0)**2, axis=1))
+        assert np.all(dists < 1.1)
+        
+    def test_shape_complexity(self):
+        angles = np.linspace(0, 2*np.pi, 200, endpoint=False)
+        circle = np.column_stack([np.cos(angles), np.sin(angles)]) * 10.0
+        comp_circle = cad_compare.compute_shape_complexity(circle)
+        assert abs(comp_circle - 12.566) < 0.2
+        
+        square = np.array([(0, 0), (10, 0), (10, 10), (0, 10)])
+        comp_sq = cad_compare.compute_shape_complexity(square)
+        assert abs(comp_sq - 16.0) < 0.1
+
+    def test_register_centroid(self):
+        sq1 = np.array([(0, 0), (10, 0), (10, 10), (0, 10)])
+        sq2 = sq1 + [5, -3]
+        
+        aligned, transform = cad_compare.register_contours(sq1, sq2, method="centroid")
+        assert np.allclose(transform["translation_mm"], [5, -3])
+        assert np.allclose(aligned, sq2)
+        
+    def test_register_icp_rotation(self):
+        # Retângulo de 20x10 para evitar simetria quadrada de 90°
+        r1 = np.array([(0, 0), (20, 0), (20, 10), (0, 10)])
+        # Rotacionado 90° em relação à origem: (x, y) -> (-y, x)
+        r2 = np.array([(0, 0), (0, 20), (-10, 20), (-10, 0)])
+        
+        aligned, transform = cad_compare.register_contours(r1, r2, method="icp", shape_class="prismatic")
+        # Espera-se rotação de 90° (ou -270°)
+        assert abs(transform["rotation_deg"] - 90.0) < 5.0 or abs(transform["rotation_deg"] + 270.0) < 5.0
+        
+    def test_register_symmetric_no_rotation(self):
+        angles = np.linspace(0, 2*np.pi, 50, endpoint=False)
+        c1 = np.column_stack([np.cos(angles), np.sin(angles)]) * 10.0
+        c2 = np.column_stack([np.cos(angles + 0.5), np.sin(angles + 0.5)]) * 10.0
+        
+        aligned, transform = cad_compare.register_contours(c1, c2, method="icp", shape_class="axisymmetric")
+        assert transform["rotation_deg"] == 0.0
+        
+    def test_compare_identical(self):
+        sq = np.array([(0, 0), (10, 0), (10, 10), (0, 10)])
+        bbox = {"width_mm": 10.0, "height_mm": 10.0, "area_mm2": 100.0}
+        metrics = cad_compare.compare_contours(sq, sq, bbox, shape_class="prismatic")
+        
+        assert abs(metrics["hausdorff_mm"]) < 1e-5
+        assert abs(metrics["mean_deviation_mm"]) < 1e-5
+        assert abs(metrics["iou"] - 1.0) < 1e-5
+        assert abs(metrics["bbox_w_deviation_mm"]) < 1e-5
+        
+    def test_compare_scaled(self):
+        sq1 = np.array([(0, 0), (10, 0), (10, 10), (0, 10)])
+        sq2 = sq1 * 0.95
+        bbox = {"width_mm": 10.0, "height_mm": 10.0, "area_mm2": 100.0}
+        metrics = cad_compare.compare_contours(sq1, sq2, bbox, shape_class="prismatic")
+        
+        assert abs(metrics["bbox_w_deviation_mm"] + 0.5) < 0.1
+        assert abs(metrics["bbox_w_deviation_pct"] + 5.0) < 1.0
+        
+    def test_deviation_map_output(self):
+        photo = np.zeros((100, 100, 3), dtype=np.uint8)
+        cad = np.array([(10, 10), (90, 10), (90, 90), (10, 90)])
+        photo_c = cad + 1.0
+        dists = np.ones(len(cad)) * 1.0
+        
+        metrics = {
+            "hausdorff_mm": 1.0,
+            "mean_deviation_mm": 1.0,
+            "deviation_std_mm": 0.0,
+            "iou": 0.95,
+            "shape_complexity": 16.0,
+            "bbox_w_deviation_mm": 0.0,
+            "bbox_w_deviation_pct": 0.0,
+            "bbox_h_deviation_mm": 0.0,
+            "bbox_h_deviation_pct": 0.0,
+            "area_deviation_pct": 0.0
+        }
+        
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            cad_compare.generate_deviation_map(
+                photo, cad, photo_c, dists, tmp_path,
+                px_per_mm_h=2.0, px_per_mm_v=2.0,
+                tolerance_mm=1.0, metrics=metrics
+            )
+            assert os.path.exists(tmp_path)
+            assert os.path.getsize(tmp_path) > 0
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
