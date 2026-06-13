@@ -24,10 +24,10 @@ $$\Delta L (\%) = \frac{L_{\text{úmido}} - L_{\text{seco}}}{L_{\text{úmido}}} 
 ## Requisitos
 
 - Python 3.10+
-- Câmera Nikon com lente 55mm (sensor 10MP, 2592×3872)
+- Câmera (utilizado neste projeto uma câmera DSLR Nikon com lente 55mm (sensor 10MP, 2592×3872))
 - Base MDF 300×230mm com grade 20×20mm gravada a laser
-- Checkerboard 9×6 impresso em A4 (quadrados de 20mm)
 - Tripé fixo
+
 
 ### Dependências Python
 
