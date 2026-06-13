@@ -110,6 +110,6 @@ Todos os 44 testes unitários utilizam dados sintéticos e não exigem conexões
 
 ## Licença
 
-Este é um projeto acadêmico desenvolvido no âmbito do Mestrado em Engenharia de Materiais.
+Este é um projeto acadêmico desenvolvido no âmbito do Mestrado em Engenharia de Materiais do IFRS.
 
 Como este subprojeto está hospedado e utiliza a biblioteca [OpenCV](https://github.com/opencv/opencv), ele adere e faz menção à licença original do projeto: a **[Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)**. O código do pipeline desenvolvido nesta pasta é livre para uso científico e acadêmico sob os mesmos termos.
