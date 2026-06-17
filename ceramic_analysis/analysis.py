@@ -378,6 +378,7 @@ def annotate_image(
     draw_bbox: bool = True,
     draw_ellipse: bool = False,
     draw_dimensions: bool = True,
+    dim_background: bool = True,
 ) -> np.ndarray:
     """
     Desenha contornos, dimensões e metadados sobre a imagem.
@@ -391,12 +392,28 @@ def annotate_image(
         draw_bbox: Desenhar o bounding box.
         draw_ellipse: Desenhar a elipse ajustada.
         draw_dimensions: Sobrepor dimensões em mm.
+        dim_background: Escurecer o fundo (fora do contorno) para destacar a peça.
 
     Returns:
         Imagem anotada.
     """
     annotated = image.copy()
     h, w = annotated.shape[:2]
+
+    # Escurecer o background (fora do contorno da peça) em 50% para destacá-la
+    if dim_background and "contour" in metrics:
+        contour = metrics["contour"]
+        mask_inside = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(mask_inside, [contour], -1, 255, -1)
+        mask_outside = cv2.bitwise_not(mask_inside)
+        
+        # Gerar background escurecido
+        darkened_bg = cv2.addWeighted(annotated, 0.5, np.zeros_like(annotated), 0.5, 0)
+        
+        # Combinar: área interna mantém original, área externa fica escurecida
+        img_inside = cv2.bitwise_and(annotated, annotated, mask=mask_inside)
+        img_outside = cv2.bitwise_and(darkened_bg, darkened_bg, mask=mask_outside)
+        annotated = cv2.add(img_inside, img_outside)
 
     # Cores
     COLOR_CONTOUR = (0, 255, 0)      # Verde
