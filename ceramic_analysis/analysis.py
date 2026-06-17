@@ -439,10 +439,6 @@ def annotate_image(
     if draw_dimensions:
         texts = []
 
-        if "bbox_w_mm" in metrics:
-            texts.append(f"L: {metrics['bbox_w_mm']:.2f} mm")
-        if "bbox_h_mm" in metrics:
-            texts.append(f"A: {metrics['bbox_h_mm']:.2f} mm")
         if "area_mm2" in metrics:
             texts.append(f"Area: {metrics['area_mm2']:.2f} mm²")
         if "perimeter_mm" in metrics:
@@ -464,6 +460,64 @@ def annotate_image(
                 font_scale, COLOR_TEXT, COLOR_TEXT_BG, thickness
             )
             y_offset += int(35 * font_scale) + int(10 * font_scale)
+
+        # Desenhar cotas/linhas de dimensão diretamente sobre a peça no perímetro/bounding box
+        if "bbox_x" in metrics and "bbox_y" in metrics and "bbox_w" in metrics and "bbox_h" in metrics:
+            x, y = metrics["bbox_x"], metrics["bbox_y"]
+            bw, bh = metrics["bbox_w"], metrics["bbox_h"]
+            
+            offset = int(40 * font_scale)
+            tick_size = int(6 * font_scale)
+            
+            # Cota Horizontal (Largura)
+            if "bbox_w_mm" in metrics:
+                # Determinar se desenha acima ou abaixo do bounding box
+                if y - offset - 10 < 0:
+                    dy = bh + offset  # Desenhar abaixo
+                else:
+                    dy = -offset      # Desenhar acima
+                
+                cota_y = y + dy
+                # Linhas de extensão
+                cv2.line(annotated, (x, y), (x, cota_y + (5 if dy < 0 else -5)), COLOR_BBOX, 1, cv2.LINE_AA)
+                cv2.line(annotated, (x + bw, y), (x + bw, cota_y + (5 if dy < 0 else -5)), COLOR_BBOX, 1, cv2.LINE_AA)
+                # Linha de cota principal
+                cv2.line(annotated, (x, cota_y), (x + bw, cota_y), COLOR_BBOX, 1, cv2.LINE_AA)
+                # Ticks arquitetônicos (traços inclinados a 45 graus)
+                cv2.line(annotated, (x - tick_size, cota_y + tick_size), (x + tick_size, cota_y - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
+                cv2.line(annotated, (x + bw - tick_size, cota_y + tick_size), (x + bw + tick_size, cota_y - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
+                # Texto da cota horizontal
+                text_w = f"{metrics['bbox_w_mm']:.2f} mm"
+                _draw_text_with_bg(
+                    annotated, text_w, (x + bw // 2, cota_y),
+                    font_scale * 0.7, COLOR_TEXT, COLOR_TEXT_BG, max(1, thickness - 1),
+                    center=True
+                )
+                
+            # Cota Vertical (Altura)
+            if "bbox_h_mm" in metrics:
+                # Determinar se desenha à esquerda ou à direita
+                if x - offset - 10 < 0:
+                    dx = bw + offset  # Desenhar à direita
+                else:
+                    dx = -offset      # Desenhar à esquerda
+                    
+                cota_x = x + dx
+                # Linhas de extensão
+                cv2.line(annotated, (x, y), (cota_x + (5 if dx < 0 else -5), y), COLOR_BBOX, 1, cv2.LINE_AA)
+                cv2.line(annotated, (x, y + bh), (cota_x + (5 if dx < 0 else -5), y + bh), COLOR_BBOX, 1, cv2.LINE_AA)
+                # Linha de cota principal
+                cv2.line(annotated, (cota_x, y), (cota_x, y + bh), COLOR_BBOX, 1, cv2.LINE_AA)
+                # Ticks arquitetônicos
+                cv2.line(annotated, (cota_x - tick_size, y + tick_size), (cota_x + tick_size, y - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
+                cv2.line(annotated, (cota_x - tick_size, y + bh + tick_size), (cota_x + tick_size, y + bh - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
+                # Texto da cota vertical
+                text_h = f"{metrics['bbox_h_mm']:.2f} mm"
+                _draw_text_with_bg(
+                    annotated, text_h, (cota_x, y + bh // 2),
+                    font_scale * 0.7, COLOR_TEXT, COLOR_TEXT_BG, max(1, thickness - 1),
+                    center=True
+                )
 
     # Metadados de escala no canto inferior esquerdo
     if scale:
@@ -491,18 +545,22 @@ def annotate_image(
 
 
 def _draw_text_with_bg(
-    img, text, position, font_scale, color, bg_color, thickness
+    img, text, position, font_scale, color, bg_color, thickness, center=False
 ):
     """Desenha texto com fundo semi-transparente para legibilidade."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
     x, y = position
+    if center:
+        x = x - tw // 2
+        y = y + th // 2
+
     # Retângulo de fundo
     cv2.rectangle(
         img,
-        (x - 2, y - th - 5),
-        (x + tw + 5, y + baseline + 2),
+        (x - 4, y - th - 5),
+        (x + tw + 4, y + baseline + 2),
         bg_color, -1
     )
     # Texto

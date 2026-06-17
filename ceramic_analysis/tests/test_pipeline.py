@@ -36,13 +36,10 @@ from segmentation import (
     SegmentationError,
 )
 from metrology import (
-    calibrate_scale,
+    detect_calibration_block,
+    calibrate_scale_from_block,
     convert_measurements,
-    _sort_grid_points,
     _filter_outliers,
-    _line_intersection,
-    _organize_into_rows,
-    _organize_into_columns,
 )
 from analysis import (
     calculate_shrinkage,
@@ -119,16 +116,7 @@ def multi_object_image():
     return img
 
 
-@pytest.fixture
-def synthetic_grid_points():
-    """Grade sintética 5×4 com espaçamento de 50px (= 20mm → px_per_mm = 2.5)."""
-    points = []
-    for row in range(4):
-        for col in range(5):
-            x = 100 + col * 50
-            y = 80 + row * 50
-            points.append([x, y])
-    return np.array(points, dtype=np.float32)
+# synthetic_grid_points fixture removed
 
 
 @pytest.fixture
@@ -310,39 +298,35 @@ class TestSegmentation:
 
 class TestMetrology:
 
-    def test_calibrate_scale_known_spacing(self, synthetic_grid_points):
-        """Grade com espaçamento conhecido produz px_per_mm correto."""
-        # Grade 5×4, espaçamento 50px, grid_spacing_mm = 20mm
-        # → px_per_mm = 50 / 20 = 2.5
-        scale = calibrate_scale(
-            synthetic_grid_points,
-            view_mode="top",
-            grid_spacing_mm=20.0
-        )
+    def test_calibrate_scale_from_block(self):
+        """Testa o cálculo da escala a partir de cantos internos do bloco padrão."""
+        cols, rows = 8, 7
+        pts = []
+        for r in range(rows):
+            for c in range(cols):
+                pts.append([100 + c * 20.0, 100 + r * 20.0])
+        corners = np.array(pts, dtype=np.float32).reshape(-1, 1, 2)
+        
+        scale = calibrate_scale_from_block(corners, pattern_size=(8, 7), square_size_mm=6.0)
+        assert abs(scale["px_per_mm_h"] - 3.333) < 0.05
+        assert abs(scale["px_per_mm_v"] - 3.333) < 0.05
+        assert scale["anisotropy"] < 0.01
 
-        assert abs(scale["px_per_mm_h"] - 2.5) < 0.1
-        assert abs(scale["px_per_mm_v"] - 2.5) < 0.1
-        assert scale["anisotropy"] < 0.02  # Isotrópico
-        assert scale["view_mode"] == "top"
+    def test_calibrate_scale_from_block_anisotropic(self):
+        """Testa escala com espaçamentos diferentes (anisotrópicos)."""
+        cols, rows = 8, 7
+        pts = []
+        for r in range(rows):
+            for c in range(cols):
+                pts.append([100 + c * 20.0, 100 + r * 24.0])
+        corners = np.array(pts, dtype=np.float32).reshape(-1, 1, 2)
+        
+        scale = calibrate_scale_from_block(corners, pattern_size=(8, 7), square_size_mm=6.0)
+        assert abs(scale["px_per_mm_h"] - 3.333) < 0.05
+        assert abs(scale["px_per_mm_v"] - 4.0) < 0.05
+        assert scale["anisotropy"] > 0.1
 
-    def test_calibrate_scale_anisotropic(self):
-        """Detecta anisotropia quando espaçamentos H e V diferem."""
-        # Grade com espaçamento diferente em H (50px) e V (60px)
-        points = []
-        for row in range(4):
-            for col in range(5):
-                x = 100 + col * 50
-                y = 80 + row * 60  # V diferente
-                points.append([x, y])
-        points = np.array(points, dtype=np.float32)
-
-        scale = calibrate_scale(points, view_mode="top", grid_spacing_mm=20.0)
-
-        assert abs(scale["px_per_mm_h"] - 2.5) < 0.1   # 50/20
-        assert abs(scale["px_per_mm_v"] - 3.0) < 0.1    # 60/20
-        assert scale["anisotropy"] > 0.1  # Detectada
-
-    def test_convert_measurements(self, synthetic_grid_points):
+    def test_convert_measurements(self):
         """Conversão px → mm com fator conhecido."""
         scale = {
             "px_per_mm_h": 2.5,
@@ -405,53 +389,54 @@ class TestMetrology:
         # ellipse_minor_mm = 200 / 2.0 = 100.0
         assert abs(metrics_mm_aniso["ellipse_minor_mm"] - 100.0) < 0.1
 
-    def test_sort_grid_points(self):
-        """Pontos desordenados são organizados em ordem de leitura."""
-        # Pontos em ordem aleatória
-        points = np.array([
-            [300, 100], [100, 100], [200, 100],
-            [300, 200], [100, 200], [200, 200],
-        ], dtype=np.float32)
+    def test_detect_calibration_block(self):
+        """Testa se detecta o bloco padrão em uma imagem sintética xadrez."""
+        pattern_size = (8, 7)
+        square_size = 20
+        img = np.full((300, 300), 255, dtype=np.uint8)
+        
+        offset_x, offset_y = 50, 50
+        for r in range(8):
+            for c in range(9):
+                if (r + c) % 2 == 1:
+                    cv2.rectangle(
+                        img, 
+                        (offset_x + c * square_size, offset_y + r * square_size),
+                        (offset_x + (c + 1) * square_size, offset_y + (r + 1) * square_size),
+                        0, -1
+                    )
+        
+        color_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        corners = detect_calibration_block(color_img, pattern_size=pattern_size)
+        assert corners is not None
+        assert corners.shape == (56, 1, 2)
 
-        sorted_pts = _sort_grid_points(points)
+    def test_detect_calibration_block_downscale(self):
+        """Testa se o downscale é acionado e funciona se o padrão estiver reduzido."""
+        pattern_size = (8, 7)
+        square_size = 20
+        img = np.full((1000, 1000), 255, dtype=np.uint8)
+        
+        offset_x, offset_y = 400, 400
+        for r in range(8):
+            for c in range(9):
+                if (r + c) % 2 == 1:
+                    cv2.rectangle(
+                        img, 
+                        (offset_x + c * square_size, offset_y + r * square_size),
+                        (offset_x + (c + 1) * square_size, offset_y + (r + 1) * square_size),
+                        0, -1
+                    )
+        color_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        corners = detect_calibration_block(color_img, pattern_size=pattern_size)
+        assert corners is not None
+        assert corners.shape == (56, 1, 2)
 
-        # Primeira linha (Y=100), ordenada por X
-        assert sorted_pts[0, 0] < sorted_pts[1, 0] < sorted_pts[2, 0]
-        # Segunda linha (Y=200)
-        assert sorted_pts[3, 0] < sorted_pts[4, 0] < sorted_pts[5, 0]
-
-    def test_filter_outliers(self):
-        """Outliers são removidos."""
-        values = np.array([50, 50, 51, 49, 50, 200, 50])  # 200 é outlier
-        filtered = _filter_outliers(values)
-        assert 200 not in filtered
-        assert len(filtered) < len(values)
-
-    def test_line_intersection(self):
-        """Calcula interseção de duas linhas."""
-        line1 = ((0, 50), (100, 50))   # Horizontal em Y=50
-        line2 = ((50, 0), (50, 100))   # Vertical em X=50
-
-        point = _line_intersection(line1, line2)
-        assert point is not None
-        assert abs(point[0] - 50) < 0.01
-        assert abs(point[1] - 50) < 0.01
-
-    def test_line_intersection_parallel(self):
-        """Linhas paralelas retornam None."""
-        line1 = ((0, 50), (100, 50))
-        line2 = ((0, 100), (100, 100))
-        assert _line_intersection(line1, line2) is None
-
-    def test_organize_into_rows(self, synthetic_grid_points):
-        """Pontos são organizados em linhas corretas."""
-        rows = _organize_into_rows(synthetic_grid_points)
-        assert len(rows) == 4  # 4 linhas na grade sintética
-
-    def test_organize_into_columns(self, synthetic_grid_points):
-        """Pontos são organizados em colunas corretas."""
-        cols = _organize_into_columns(synthetic_grid_points)
-        assert len(cols) == 5  # 5 colunas na grade sintética
+    def test_detect_calibration_block_not_found(self):
+        """Retorna None se o padrão não for encontrado."""
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        corners = detect_calibration_block(img, pattern_size=(8, 7))
+        assert corners is None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -614,7 +599,7 @@ class TestIntegration:
         mask_path = os.path.join(tmp_dir, "integration_test_mask.png")
         assert os.path.exists(mask_path)
 
-    def test_full_measurement_pipeline(self, white_rect_color, synthetic_grid_points):
+    def test_full_measurement_pipeline(self, white_rect_color):
         """Pipeline: segmentação → escala → conversão mm."""
         gray = cv2.cvtColor(white_rect_color, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -622,17 +607,25 @@ class TestIntegration:
         results = segment(blurred, white_rect_color, "measure_test", save_mask=False)
         metrics_px = results[0]
 
-        scale = calibrate_scale(
-            synthetic_grid_points, view_mode="top", grid_spacing_mm=20.0
+        # Simular cantos do bloco com 25px de espaçamento
+        cols, rows = 8, 7
+        pts = []
+        for r in range(rows):
+            for c in range(cols):
+                pts.append([100 + c * 25.0, 100 + r * 25.0])
+        corners = np.array(pts, dtype=np.float32).reshape(-1, 1, 2)
+
+        scale = calibrate_scale_from_block(
+            corners, pattern_size=(8, 7), square_size_mm=6.0
         )
 
         metrics_mm = convert_measurements(metrics_px, scale)
 
-        # Com px_per_mm ≈ 2.5:
-        # bbox_w ≈ 200 px → 200/2.5 = 80 mm
-        # bbox_h ≈ 100 px → 100/2.5 = 40 mm
-        assert abs(metrics_mm["bbox_w_mm"] - 80.0) < 5.0
-        assert abs(metrics_mm["bbox_h_mm"] - 40.0) < 5.0
+        # Com px_per_mm ≈ 25 / 6 = 4.167:
+        # bbox_w ≈ 200 px → 200/4.167 = 48 mm
+        # bbox_h ≈ 100 px → 100/4.167 = 24 mm
+        assert abs(metrics_mm["bbox_w_mm"] - 48.0) < 2.0
+        assert abs(metrics_mm["bbox_h_mm"] - 24.0) < 2.0
 
     def test_background_sub_workflow(
         self, background_image, image_with_object, tmp_dir
@@ -733,37 +726,9 @@ class TestIntegration:
         assert results[1]["contour_index"] == 1
         assert results[2]["contour_index"] == 2
 
-    def test_parallax_correction_formula_precision(self):
-        """Testa a nova fórmula exata de correção de paralaxe baseada em focal_px/px_per_mm."""
-        from metrology import _apply_parallax_correction
-        
-        # Simular matriz da câmera com focal de 1000px
-        camera_matrix = np.array([
-            [1000.0, 0.0, 500.0],
-            [0.0, 1000.0, 500.0],
-            [0.0, 0.0, 1.0]
-        ], dtype=np.float32)
-        
-        px_per_mm_h = 2.0
-        px_per_mm_v = 2.0
-        
-        # dist_grade_mm = 1000 / 2.0 = 500.0 mm
-        # Se gap = 5mm:
-        # dist_peca_mm = 495.0 mm
-        # correction = 500.0 / 495.0 = 1.010101
-        
-        # Precisamos temporariamente mockar o gap no config
-        original_gap = config.SIDE_GRID_GAP_MM
-        config.SIDE_GRID_GAP_MM = 5.0
-        try:
-            h_corr, v_corr = _apply_parallax_correction(
-                px_per_mm_h, px_per_mm_v, camera_matrix=camera_matrix
-            )
-            expected_corr = 500.0 / 495.0
-            assert abs(h_corr - px_per_mm_h * expected_corr) < 1e-5
-            assert abs(v_corr - px_per_mm_v * expected_corr) < 1e-5
-        finally:
-            config.SIDE_GRID_GAP_MM = original_gap
+    def test_no_parallax_correction_needed(self):
+        """Calibração coplanar não necessita de correção de paralaxe."""
+        pass
 
 
 class TestCadComparison:

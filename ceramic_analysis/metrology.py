@@ -1,26 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de metrologia: calibração de escala via grade no MDF e conversão de medidas.
+Módulo de metrologia: calibração de escala via bloco padrão coplanar.
 
 Responsável por:
-1. Detectar as interseções da grade gravada a laser na base MDF
-2. Calcular fatores de escala px_per_mm independentes para H e V
-3. Verificar distorção anisotrópica e linearidade
-4. Corrigir perspectiva via homografia (opcional)
-5. Aplicar correção de paralaxe para vistas laterais
-6. Converter todas as métricas de pixels para milímetros
-
-Uso:
-    from metrology import detect_grid, calibrate_scale, convert_measurements
-
-    # Detectar grade na foto da base vazia
-    grid_points = detect_grid(background_image)
-
-    # Calcular escala
-    scale = calibrate_scale(grid_points, view_mode="top")
-
-    # Converter métricas
-    metrics_mm = convert_measurements(metrics_px, scale)
+1. Detectar o padrão xadrez (chessboard) do bloco padrão de calibração
+2. Calcular fatores de escala px_per_mm independentes para H e V a partir do bloco
+3. Converter todas as métricas de pixels para milímetros
 """
 
 import logging
@@ -40,532 +25,177 @@ class MetrologyError(Exception):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Detecção da grade no MDF
+# Detecção do Bloco Padrão
 # ──────────────────────────────────────────────────────────────────────────────
 
-def detect_grid(
-    background_image: np.ndarray,
-    min_intersections: int = 6
+def detect_calibration_block(
+    image: np.ndarray,
+    pattern_size: tuple = None,
+    square_size_mm: float = None
 ) -> np.ndarray:
     """
-    Detecta as interseções da grade quadriculada gravada a laser no MDF.
+    Detecta automaticamente o padrão xadrez (chessboard) do bloco padrão de calibração.
 
-    A grade consiste em linhas pretas (gravação a laser) sobre MDF claro,
-    formando uma malha de 20×20mm. As interseções são detectadas via:
-    1. Binarização para isolar as linhas escuras
-    2. Detecção de linhas via HoughLinesP
-    3. Cálculo dos pontos de interseção
-    4. Refinamento subpixel com cornerSubPix
+    Tenta encontrar os cantos internos usando cv2.findChessboardCorners.
+    Se falhar na imagem original, tenta redimensionar a imagem (downscale)
+    para maior robustez em imagens de alta resolução com ruído.
+    Aplica cv2.cornerSubPix para precisão subpixel.
 
     Args:
-        background_image: Foto da base MDF vazia (BGR, uint8).
-        min_intersections: Mínimo de interseções necessárias para calibração.
+        image: Imagem de entrada (BGR ou Gray, undistorted).
+        pattern_size: Tupla (colunas_internas, linhas_internas) de cantos.
+                      Default: config.CALIB_BLOCK_PATTERN_SIZE
+        square_size_mm: Tamanho real de cada quadrado (não usado aqui, mas para assinatura).
 
     Returns:
-        Array Nx2 com coordenadas (x, y) das interseções em pixels,
-        ordenadas da esquerda-para-direita, cima-para-baixo.
-
-    Raises:
-        MetrologyError: Se poucas interseções forem detectadas.
+        Array Nx1x2 de pontos (x, y) de cantos refinados, ou None se falhar.
     """
-    logger.info("Detectando grade no MDF...")
+    if pattern_size is None:
+        pattern_size = getattr(config, "CALIB_BLOCK_PATTERN_SIZE", (8, 7))
 
-    gray = cv2.cvtColor(background_image, cv2.COLOR_BGR2GRAY)
+    logger.info(f"Detectando bloco padrão de calibração (tamanho do padrão: {pattern_size})...")
 
-    # Equalizar histograma para melhor contraste das linhas
-    gray_eq = cv2.equalizeHist(gray)
-
-    # Binarizar: as linhas do laser são ESCURAS sobre MDF CLARO
-    # Threshold adaptativo funciona melhor que Otsu aqui porque
-    # a iluminação pode não ser uniforme sobre toda a base
-    binary = cv2.adaptiveThreshold(
-        gray_eq, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        blockSize=31,
-        C=25
-    )
-
-    # Refinamento morfológico: afinar linhas
-    kernel_thin = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_thin)
-
-    # Detectar linhas com Hough Probabilístico
-    lines = cv2.HoughLinesP(
-        binary,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=100,
-        minLineLength=100,
-        maxLineGap=20
-    )
-
-    if lines is None or len(lines) < 4:
-        raise MetrologyError(
-            "Poucas linhas detectadas na grade. Verifique:\n"
-            "  - A gravação a laser está visível e com bom contraste?\n"
-            "  - A imagem está focada?\n"
-            "  - A iluminação é suficiente?"
-        )
-
-    # Separar linhas horizontais e verticais pelo ângulo
-    horizontal_lines = []
-    vertical_lines = []
-
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        angle = np.degrees(np.arctan2(abs(y2 - y1), abs(x2 - x1)))
-
-        if angle < 20:   # Quase horizontal (< 20° da horizontal)
-            horizontal_lines.append(line[0])
-        elif angle > 70:  # Quase vertical (> 70° da horizontal)
-            vertical_lines.append(line[0])
-
-    logger.debug(
-        f"  Linhas detectadas: {len(horizontal_lines)} horizontais, "
-        f"{len(vertical_lines)} verticais"
-    )
-
-    if len(horizontal_lines) < 2 or len(vertical_lines) < 2:
-        raise MetrologyError(
-            f"Insuficiente: {len(horizontal_lines)} linhas horizontais, "
-            f"{len(vertical_lines)} verticais (mínimo 2 de cada)."
-        )
-
-    # Agrupar linhas próximas (mesma posição) via clustering por coordenada
-    # Para robustez frente a diferentes resoluções, estimamos a distância mediana
-    # entre linhas antes de agrupar definitivamente.
-    
-    # 1. Agrupamento preliminar com gap padrão (15px)
-    pre_h = _cluster_lines(horizontal_lines, axis="h", min_gap=15)
-    pre_v = _cluster_lines(vertical_lines, axis="v", min_gap=15)
-    
-    # 2. Estimar o espaçamento da grade em pixels
-    pos_h = sorted([(l[0][1] + l[1][1])/2 for l in pre_h])
-    pos_v = sorted([(l[0][0] + l[1][0])/2 for l in pre_v])
-    
-    diffs_h = np.diff(pos_h)
-    diffs_v = np.diff(pos_v)
-    
-    # Filtrar espaçamentos muito pequenos (ruído < 50px)
-    sig_h = diffs_h[diffs_h > 50]
-    sig_v = diffs_v[diffs_v > 50]
-    
-    spacing_h = np.median(sig_h) if len(sig_h) > 0 else 100
-    spacing_v = np.median(sig_v) if len(sig_v) > 0 else 100
-    
-    min_gap_h = max(15, int(spacing_h * 0.6))
-    min_gap_v = max(15, int(spacing_v * 0.6))
-    
-    logger.debug(
-        f"  Espaçamento estimado da grade: H={spacing_h:.1f}px (gap={min_gap_h}), "
-        f"V={spacing_v:.1f}px (gap={min_gap_v})"
-    )
-
-    # 3. Agrupamento final com o min_gap robusto
-    h_positions = _cluster_lines(horizontal_lines, axis="h", min_gap=min_gap_h)
-    v_positions = _cluster_lines(vertical_lines, axis="v", min_gap=min_gap_v)
-
-    logger.debug(
-        f"  Linhas agrupadas: {len(h_positions)} horizontais, "
-        f"{len(v_positions)} verticais"
-    )
-
-    # Calcular interseções
-    intersections = []
-    for h_line in h_positions:
-        for v_line in v_positions:
-            point = _line_intersection(h_line, v_line)
-            if point is not None:
-                # Verificar se o ponto está dentro da imagem
-                h, w = gray.shape
-                if 0 <= point[0] < w and 0 <= point[1] < h:
-                    intersections.append(point)
-
-    if len(intersections) < min_intersections:
-        raise MetrologyError(
-            f"Apenas {len(intersections)} interseções encontradas "
-            f"(mínimo: {min_intersections}). Verifique a qualidade da grade."
-        )
-
-    intersections = np.array(intersections, dtype=np.float32)
-
-    # Refinamento subpixel
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
-    corners = intersections.reshape(-1, 1, 2)
-    cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
-    intersections = corners.reshape(-1, 2)
-
-    # Ordenar: esquerda→direita, cima→baixo
-    intersections = _sort_grid_points(intersections)
-
-    logger.info(f"  ✓ {len(intersections)} interseções detectadas e refinadas")
-
-    return intersections
-
-
-def _cluster_lines(lines: list, axis: str, min_gap: int = 15) -> list:
-    """
-    Agrupa linhas próximas (representando a mesma linha da grade).
-
-    Linhas são agrupadas pela coordenada perpendicular ao eixo:
-    - Horizontais: agrupar por posição Y
-    - Verticais: agrupar por posição X
-
-    Args:
-        lines: Lista de segmentos (x1, y1, x2, y2).
-        axis: "h" para horizontais, "v" para verticais.
-        min_gap: Distância mínima entre clusters (pixels).
-
-    Returns:
-        Lista de linhas representativas (uma por cluster), cada uma como
-        tupla ((x1, y1), (x2, y2)) com os pontos médios do cluster.
-    """
-    if axis == "h":
-        # Posição Y média de cada linha
-        positions = [(y1 + y2) / 2 for x1, y1, x2, y2 in lines]
+    # Converter para escala de cinza se colorida
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
-        # Posição X média de cada linha
-        positions = [(x1 + x2) / 2 for x1, y1, x2, y2 in lines]
+        gray = image.copy()
 
-    # Ordenar por posição
-    sorted_indices = np.argsort(positions)
-    sorted_positions = [positions[i] for i in sorted_indices]
-    sorted_lines = [lines[i] for i in sorted_indices]
+    # Tentar detecção direta
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
+    ret, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags)
 
-    # Agrupar por proximidade
-    clusters = []
-    current_cluster = [sorted_lines[0]]
-    current_pos = sorted_positions[0]
+    # Se falhar, tentar sem FAST_CHECK (mais lento porém mais robusto)
+    if not ret:
+        logger.debug("Detecção direta falhou, tentando sem FAST_CHECK...")
+        flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+        ret, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags_no_fast)
 
-    for i in range(1, len(sorted_lines)):
-        if sorted_positions[i] - current_pos < min_gap:
-            current_cluster.append(sorted_lines[i])
-        else:
-            clusters.append(current_cluster)
-            current_cluster = [sorted_lines[i]]
-        current_pos = sorted_positions[i]
-    clusters.append(current_cluster)
+    # Se ainda falhar, tentar com downscale para melhorar contraste de estruturas grandes
+    if not ret:
+        for scale in [0.5, 0.25]:
+            logger.debug(f"Detecção falhou, tentando com downscale de {scale}...")
+            w = int(gray.shape[1] * scale)
+            h = int(gray.shape[0] * scale)
+            resized = cv2.resize(gray, (w, h), interpolation=cv2.INTER_AREA)
+            ret_res, corners_res = cv2.findChessboardCorners(resized, pattern_size, flags=flags_no_fast)
+            if ret_res:
+                logger.info(f"✓ Bloco padrão detectado com downscale de {scale}")
+                # Mapear cantos de volta para resolução original
+                corners = corners_res / scale
+                ret = True
+                break
 
-    # Linha representativa: média dos endpoints do cluster
-    representative_lines = []
-    for cluster in clusters:
-        x1_avg = np.mean([l[0] for l in cluster])
-        y1_avg = np.mean([l[1] for l in cluster])
-        x2_avg = np.mean([l[2] for l in cluster])
-        y2_avg = np.mean([l[3] for l in cluster])
-        representative_lines.append(
-            ((x1_avg, y1_avg), (x2_avg, y2_avg))
-        )
+    if not ret or corners is None:
+        logger.warning("Bloco padrão de calibração não foi detectado automaticamente.")
+        return None
 
-    return representative_lines
+    # Refinamento subpixel na imagem original
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    corners = corners.astype(np.float32)
+    cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
 
-
-def _line_intersection(line1: tuple, line2: tuple):
-    """
-    Calcula o ponto de interseção entre duas linhas definidas por 2 pontos cada.
-
-    Args:
-        line1: Tupla ((x1, y1), (x2, y2)) da primeira linha.
-        line2: Tupla ((x1, y1), (x2, y2)) da segunda linha.
-
-    Returns:
-        Tupla (x, y) do ponto de interseção, ou None se as linhas são paralelas.
-    """
-    (x1, y1), (x2, y2) = line1
-    (x3, y3), (x4, y4) = line2
-
-    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-    if abs(denom) < 1e-6:
-        return None  # Linhas paralelas
-
-    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
-
-    ix = x1 + t * (x2 - x1)
-    iy = y1 + t * (y2 - y1)
-
-    return (ix, iy)
+    logger.info(f"✓ Bloco padrão de calibração detectado e refinado subpixel: {len(corners)} cantos")
+    return corners
 
 
-def _sort_grid_points(points: np.ndarray) -> np.ndarray:
-    """
-    Ordena pontos de uma grade em ordem de leitura (esquerda→direita, cima→baixo).
-
-    Usa clustering hierárquico na coordenada Y para identificar linhas,
-    depois ordena cada linha por X.
-
-    Args:
-        points: Array Nx2 de coordenadas (x, y).
-
-    Returns:
-        Array Nx2 ordenado.
-    """
-    if len(points) < 2:
-        return points
-
-    # Ordenar por Y primeiro
-    sorted_by_y = points[np.argsort(points[:, 1])]
-
-    # Agrupar em linhas por proximidade em Y
-    rows = []
-    current_row = [sorted_by_y[0]]
-
-    y_threshold = np.median(np.diff(np.sort(points[:, 1]))) * 0.5
-    if y_threshold < 5:
-        y_threshold = 15  # Fallback mínimo
-
-    for i in range(1, len(sorted_by_y)):
-        if abs(sorted_by_y[i, 1] - current_row[-1][1]) < y_threshold:
-            current_row.append(sorted_by_y[i])
-        else:
-            rows.append(np.array(current_row))
-            current_row = [sorted_by_y[i]]
-    rows.append(np.array(current_row))
-
-    # Ordenar cada linha por X
-    sorted_points = []
-    for row in rows:
-        row_sorted = row[np.argsort(row[:, 0])]
-        sorted_points.extend(row_sorted)
-
-    return np.array(sorted_points)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Calibração de escala
-# ──────────────────────────────────────────────────────────────────────────────
-
-def calibrate_scale(
-    grid_points: np.ndarray,
-    view_mode: str = "top",
-    grid_spacing_mm: float = None,
-    camera_matrix: np.ndarray = None
+def calibrate_scale_from_block(
+    corners: np.ndarray,
+    pattern_size: tuple = None,
+    square_size_mm: float = None
 ) -> dict:
     """
-    Calcula fatores de escala px_per_mm a partir das interseções da grade.
+    Calcula a escala px_per_mm horizontal e vertical a partir dos cantos detectados no bloco padrão.
 
-    Calcula o espaçamento médio entre interseções adjacentes em ambos os
-    eixos, dividindo pelo espaçamento real (20mm) para obter px_per_mm.
+    Calcula a distância média em pixels entre cantos adjacentes nas linhas (horizontal)
+    e nas colunas (vertical), e divide pelo square_size_mm para obter px_per_mm.
 
-    Para vista lateral, aplica correção de paralaxe se configurada.
+    Os cantos são organizados por cv2.findChessboardCorners na ordem:
+    esquerda-para-direita, cima-para-baixo.
 
     Args:
-        grid_points: Array Nx2 com interseções da grade em pixels.
-        view_mode: "top" (vista de cima) ou "side" (vista lateral).
-        grid_spacing_mm: Espaçamento real da grade em mm.
-                         Default: config.GRID_SPACING_MM (20.0)
-        camera_matrix: Matriz intrínseca (necessária para correção de paralaxe).
-                       Default: None (usa aproximação geométrica).
+        corners: Array Nx1x2 (ou Nx2) com os cantos internos validados (em pixels).
+        pattern_size: Tupla (colunas_internas, linhas_internas) de cantos.
+                      Default: config.CALIB_BLOCK_PATTERN_SIZE (8, 7)
+        square_size_mm: Tamanho real do lado de cada quadrado em mm.
+                        Default: config.CALIB_BLOCK_SQUARE_SIZE_MM (6.0)
 
     Returns:
-        Dict com:
-            - px_per_mm_h: Fator de escala horizontal (pixels por mm)
-            - px_per_mm_v: Fator de escala vertical (pixels por mm)
-            - anisotropy: Diferença relativa entre H e V (0.0 = isotrópico)
+        Dict com a escala nos eixos H e V:
+            - px_per_mm_h: Fator horizontal (pixels por mm)
+            - px_per_mm_v: Fator vertical (pixels por mm)
+            - anisotropy: Diferença relativa (|H - V| / max(H, V))
             - linearity_h: Desvio padrão relativo dos espaçamentos horizontais
             - linearity_v: Desvio padrão relativo dos espaçamentos verticais
-            - n_points: Número de interseções usadas
-            - view_mode: "top" ou "side"
+            - n_points: Número de cantos usados
+            - view_mode: "top"
     """
-    grid_spacing_mm = grid_spacing_mm or config.GRID_SPACING_MM
+    if pattern_size is None:
+        pattern_size = getattr(config, "CALIB_BLOCK_PATTERN_SIZE", (8, 7))
+    if square_size_mm is None:
+        square_size_mm = getattr(config, "CALIB_BLOCK_SQUARE_SIZE_MM", 6.0)
 
-    logger.info(f"Calibrando escala (vista: {view_mode})...")
+    cols, rows = pattern_size
+    pts = corners.reshape(-1, 2)
 
-    # Organizar pontos em linhas e colunas
-    rows = _organize_into_rows(grid_points)
-
-    # Calcular espaçamentos horizontais (entre colunas adjacentes na mesma linha)
-    h_spacings = []
-    for row in rows:
-        if len(row) >= 2:
-            sorted_row = row[np.argsort(row[:, 0])]
-            diffs = np.diff(sorted_row[:, 0])
-            h_spacings.extend(diffs)
-
-    # Calcular espaçamentos verticais (entre linhas adjacentes na mesma coluna)
-    cols = _organize_into_columns(grid_points)
-    v_spacings = []
-    for col in cols:
-        if len(col) >= 2:
-            sorted_col = col[np.argsort(col[:, 1])]
-            diffs = np.diff(sorted_col[:, 1])
-            v_spacings.extend(diffs)
-
-    if not h_spacings or not v_spacings:
+    if len(pts) != cols * rows:
         raise MetrologyError(
-            "Não foi possível calcular espaçamentos da grade. "
-            "Verifique se há pelo menos 2×2 interseções detectadas."
+            f"Número incorreto de cantos para calibração. Esperado {cols * rows}, obtido {len(pts)}."
         )
+
+    # 1. Calcular espaçamentos horizontais (entre colunas adjacentes na mesma linha)
+    h_spacings = []
+    for r in range(rows):
+        row_idx_start = r * cols
+        for c in range(cols - 1):
+            pt_left = pts[row_idx_start + c]
+            pt_right = pts[row_idx_start + c + 1]
+            dist = np.linalg.norm(pt_right - pt_left)
+            h_spacings.append(dist)
+
+    # 2. Calcular espaçamentos verticais (entre linhas adjacentes na mesma coluna)
+    v_spacings = []
+    for c in range(cols):
+        for r in range(rows - 1):
+            pt_top = pts[r * cols + c]
+            pt_bottom = pts[(r + 1) * cols + c]
+            dist = np.linalg.norm(pt_bottom - pt_top)
+            v_spacings.append(dist)
 
     h_spacings = np.array(h_spacings)
     v_spacings = np.array(v_spacings)
 
-    # Filtrar outliers (espaçamentos muito diferentes da mediana)
+    # Filtrar outliers
     h_spacings = _filter_outliers(h_spacings)
     v_spacings = _filter_outliers(v_spacings)
 
-    # Espaçamento médio em pixels
     mean_h_px = np.mean(h_spacings)
     mean_v_px = np.mean(v_spacings)
 
-    # Fatores de escala com fatores de correção de escala do config (ajuste fino)
-    px_per_mm_h = (mean_h_px / grid_spacing_mm) * getattr(config, "SCALE_CORRECTION_FACTOR_H", 1.0)
-    px_per_mm_v = (mean_v_px / grid_spacing_mm) * getattr(config, "SCALE_CORRECTION_FACTOR_V", 1.0)
+    # O bloco está no mesmo plano da face a ser medida, então a escala é direta!
+    px_per_mm_h = mean_h_px / square_size_mm
+    px_per_mm_v = mean_v_px / square_size_mm
 
-    # Aplicar correção de paralaxe para vista lateral
-    if view_mode == "side" and config.SIDE_GRID_GAP_MM > 0:
-        px_per_mm_h, px_per_mm_v = _apply_parallax_correction(
-            px_per_mm_h, px_per_mm_v, camera_matrix, grid_points
-        )
-
-    # Verificar anisotropia
     anisotropy = abs(px_per_mm_h - px_per_mm_v) / max(px_per_mm_h, px_per_mm_v)
+    linearity_h = np.std(h_spacings) / mean_h_px if mean_h_px > 0 else 0.0
+    linearity_v = np.std(v_spacings) / mean_v_px if mean_v_px > 0 else 0.0
 
-    # Verificar linearidade (distorção residual)
-    linearity_h = np.std(h_spacings) / mean_h_px if mean_h_px > 0 else 0
-    linearity_v = np.std(v_spacings) / mean_v_px if mean_v_px > 0 else 0
-
-    # Logging
-    logger.info(f"  Espaçamento horizontal: {mean_h_px:.2f} px = {grid_spacing_mm} mm")
-    logger.info(f"  Espaçamento vertical:   {mean_v_px:.2f} px = {grid_spacing_mm} mm")
+    logger.info("Calibração via Bloco Padrão:")
+    logger.info(f"  Espaçamento horizontal médio: {mean_h_px:.2f} px ({square_size_mm} mm)")
+    logger.info(f"  Espaçamento vertical médio:   {mean_v_px:.2f} px ({square_size_mm} mm)")
     logger.info(f"  px_per_mm_h: {px_per_mm_h:.4f}")
     logger.info(f"  px_per_mm_v: {px_per_mm_v:.4f}")
+    logger.info(f"  Anisotropia: {anisotropy:.1%}")
 
-    if anisotropy > 0.02:
-        logger.warning(
-            f"  ⚠ Distorção anisotrópica detectada: {anisotropy:.1%}. "
-            f"As escalas H e V diferem mais de 2%."
-        )
-    else:
-        logger.info(f"  ✓ Anisotropia: {anisotropy:.1%} (< 2%)")
-
-    if linearity_h > 0.02 or linearity_v > 0.02:
-        logger.warning(
-            f"  ⚠ Possível distorção radial residual: "
-            f"linearidade H={linearity_h:.1%}, V={linearity_v:.1%}"
-        )
-
-    scale = {
+    return {
         "px_per_mm_h": px_per_mm_h,
         "px_per_mm_v": px_per_mm_v,
         "anisotropy": anisotropy,
         "linearity_h": linearity_h,
         "linearity_v": linearity_v,
-        "n_points": len(grid_points),
-        "view_mode": view_mode,
+        "n_points": len(pts),
+        "view_mode": "top"
     }
-
-    return scale
-
-
-def _apply_parallax_correction(
-    px_per_mm_h: float,
-    px_per_mm_v: float,
-    camera_matrix: np.ndarray = None,
-    grid_points: np.ndarray = None
-) -> tuple:
-    """
-    Corrige a escala para a diferença de profundidade entre grade e peça.
-
-    Na vista lateral, a grade está atrás da peça (mais longe da câmera).
-    A escala medida na grade é ligeiramente menor que a escala real da peça.
-
-    Correção: scale_peça = scale_grade × (dist_grade / dist_peça)
-    Como dist_peça = dist_grade - gap:
-        correction = dist_grade / (dist_grade - gap)
-
-    A distância à grade é estimada a partir do focal length da câmera
-    e do tamanho conhecido da grade. Se a câmera não foi calibrada,
-    usa uma estimativa conservadora.
-
-    Args:
-        px_per_mm_h: Fator horizontal sem correção.
-        px_per_mm_v: Fator vertical sem correção.
-        camera_matrix: Matriz intrínseca (para focal length).
-        grid_points: Pontos da grade (para estimar distância).
-
-    Returns:
-        Tupla (px_per_mm_h_corrigido, px_per_mm_v_corrigido).
-    """
-    gap_mm = config.SIDE_GRID_GAP_MM
-
-    if gap_mm <= 0:
-        return px_per_mm_h, px_per_mm_v
-
-    # Estimar distância câmera→grade via focal length e escala local calibrada
-    if camera_matrix is not None:
-        focal_px = (camera_matrix[0, 0] + camera_matrix[1, 1]) / 2
-        px_per_mm = (px_per_mm_h + px_per_mm_v) / 2.0
-        # Distância = focal_px / px_per_mm
-        dist_grade_mm = focal_px / px_per_mm
-    else:
-        # Estimativa conservadora: câmera a ~600mm da grade
-        dist_grade_mm = 600.0
-        logger.debug(
-            f"  Sem calibração — estimando distância câmera→grade: {dist_grade_mm}mm"
-        )
-
-    dist_peca_mm = dist_grade_mm - gap_mm
-    correction = dist_grade_mm / dist_peca_mm
-
-    logger.info(
-        f"  Correção de paralaxe: gap={gap_mm}mm, "
-        f"dist_grade≈{dist_grade_mm:.0f}mm, "
-        f"fator={correction:.4f} ({(correction - 1) * 100:.2f}%)"
-    )
-
-    return px_per_mm_h * correction, px_per_mm_v * correction
-
-
-def _organize_into_rows(points: np.ndarray, y_threshold: float = None) -> list:
-    """Organiza pontos em linhas horizontais por proximidade em Y."""
-    if len(points) < 2:
-        return [points]
-
-    sorted_by_y = points[np.argsort(points[:, 1])]
-    y_diffs = np.diff(sorted_by_y[:, 1])
-
-    if y_threshold is None:
-        # Usar mediana dos diffs como threshold
-        y_threshold = np.median(y_diffs[y_diffs > 5]) * 0.5 if len(y_diffs[y_diffs > 5]) > 0 else 15
-
-    rows = []
-    current_row = [sorted_by_y[0]]
-
-    for i in range(1, len(sorted_by_y)):
-        if abs(sorted_by_y[i, 1] - current_row[-1][1]) < y_threshold:
-            current_row.append(sorted_by_y[i])
-        else:
-            rows.append(np.array(current_row))
-            current_row = [sorted_by_y[i]]
-    rows.append(np.array(current_row))
-
-    return rows
-
-
-def _organize_into_columns(points: np.ndarray, x_threshold: float = None) -> list:
-    """Organiza pontos em colunas verticais por proximidade em X."""
-    if len(points) < 2:
-        return [points]
-
-    sorted_by_x = points[np.argsort(points[:, 0])]
-    x_diffs = np.diff(sorted_by_x[:, 0])
-
-    if x_threshold is None:
-        x_threshold = np.median(x_diffs[x_diffs > 5]) * 0.5 if len(x_diffs[x_diffs > 5]) > 0 else 15
-
-    cols = []
-    current_col = [sorted_by_x[0]]
-
-    for i in range(1, len(sorted_by_x)):
-        if abs(sorted_by_x[i, 0] - current_col[-1][0]) < x_threshold:
-            current_col.append(sorted_by_x[i])
-        else:
-            cols.append(np.array(current_col))
-            current_col = [sorted_by_x[i]]
-    cols.append(np.array(current_col))
-
-    return cols
 
 
 def _filter_outliers(values: np.ndarray, factor: float = 2.0) -> np.ndarray:
@@ -588,97 +218,6 @@ def _filter_outliers(values: np.ndarray, factor: float = 2.0) -> np.ndarray:
     return filtered if len(filtered) > 0 else values
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Correção de perspectiva
-# ──────────────────────────────────────────────────────────────────────────────
-
-def correct_perspective(
-    image: np.ndarray,
-    detected_points: np.ndarray,
-    grid_spacing_mm: float = None,
-    output_px_per_mm: float = None
-) -> tuple:
-    """
-    Corrige distorção de perspectiva usando pontos da grade como referência.
-
-    Se a câmera não está perfeitamente perpendicular à base/backdrop,
-    a homografia transforma a imagem para que a grade fique retangular.
-
-    Args:
-        image: Imagem para corrigir (BGR ou gray).
-        detected_points: Pontos detectados da grade (Nx2).
-        grid_spacing_mm: Espaçamento real da grade.
-        output_px_per_mm: Se definido, escala a imagem para esta resolução.
-
-    Returns:
-        Tupla (corrected_image, H):
-            - corrected_image: Imagem corrigida.
-            - H: Matriz de homografia 3x3.
-    """
-    grid_spacing_mm = grid_spacing_mm or config.GRID_SPACING_MM
-
-    # Organizar em grade
-    rows = _organize_into_rows(detected_points)
-    # Filtrar linhas com poucos pontos (ruídos/bordas incompletas)
-    rows = [r for r in rows if len(r) >= 4]
-    n_rows = len(rows)
-    n_cols = min(len(r) for r in rows) if rows else 0
-
-    if n_rows < 2 or n_cols < 2:
-        raise MetrologyError("Grade insuficiente para correção de perspectiva")
-
-    # Criar pontos ideais (grade perfeita)
-    if output_px_per_mm is None:
-        # Manter resolução aproximada da imagem original
-        mean_spacing = np.mean([
-            np.mean(np.diff(np.sort(row[:n_cols, 0])))
-            for row in rows if len(row) >= n_cols
-        ])
-        output_px_per_mm = mean_spacing / grid_spacing_mm
-
-    src_points = []
-    dst_points = []
-
-    for i, row in enumerate(rows):
-        sorted_row = row[np.argsort(row[:, 0])]
-        for j in range(min(n_cols, len(sorted_row))):
-            src_points.append(sorted_row[j])
-            # Posição ideal: grade perfeita com espaçamento uniforme
-            ideal_x = j * grid_spacing_mm * output_px_per_mm + 50
-            ideal_y = i * grid_spacing_mm * output_px_per_mm + 50
-            dst_points.append([ideal_x, ideal_y])
-
-    src_points = np.array(src_points, dtype=np.float32)
-    dst_points = np.array(dst_points, dtype=np.float32)
-
-    # Calcular homografia
-    H, status = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 3.0)
-
-    if H is None:
-        raise MetrologyError("Falha ao calcular homografia para correção de perspectiva")
-
-    # Aplicar transformação
-    h, w = image.shape[:2]
-    # Calcular tamanho da imagem de saída
-    out_w = int(n_cols * grid_spacing_mm * output_px_per_mm + 100)
-    out_h = int(n_rows * grid_spacing_mm * output_px_per_mm + 100)
-    out_w = max(out_w, w)
-    out_h = max(out_h, h)
-
-    corrected = cv2.warpPerspective(image, H, (out_w, out_h))
-
-    logger.info(
-        f"  ✓ Perspectiva corrigida: {w}×{h} → {out_w}×{out_h}, "
-        f"px_per_mm={output_px_per_mm:.2f}"
-    )
-
-    return corrected, H
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Conversão de medidas px → mm
-# ──────────────────────────────────────────────────────────────────────────────
-
 def convert_measurements(metrics_px: dict, scale: dict) -> dict:
     """
     Converte métricas de pixels para milímetros usando os fatores de escala.
@@ -687,7 +226,7 @@ def convert_measurements(metrics_px: dict, scale: dict) -> dict:
 
     Args:
         metrics_px: Dict com métricas em pixels (de segmentation.extract_contour_metrics).
-        scale: Dict com fatores de escala (de calibrate_scale).
+        scale: Dict com fatores de escala.
 
     Returns:
         Dict com métricas originais + métricas em mm adicionadas.
@@ -705,15 +244,15 @@ def convert_measurements(metrics_px: dict, scale: dict) -> dict:
     # Retângulo mínimo: decompõe os fatores horizontal/vertical com base no ângulo de rotação
     angle_deg = metrics_px.get("min_rect_angle", 0.0)
     theta = np.radians(angle_deg)
-    
+
     # Fator de escala para min_rect_w (orientado em theta)
     denom_w = (np.cos(theta) / px_h) ** 2 + (np.sin(theta) / px_v) ** 2
     px_w = 1.0 / np.sqrt(denom_w) if denom_w > 0 else px_avg
-    
+
     # Fator de escala para min_rect_h (orientado em theta + pi/2)
     denom_h = (np.sin(theta) / px_h) ** 2 + (np.cos(theta) / px_v) ** 2
     px_h_rect = 1.0 / np.sqrt(denom_h) if denom_h > 0 else px_avg
-    
+
     metrics_mm["min_rect_w_mm"] = metrics_px["min_rect_w"] / px_w
     metrics_mm["min_rect_h_mm"] = metrics_px["min_rect_h"] / px_h_rect
 
@@ -726,11 +265,11 @@ def convert_measurements(metrics_px: dict, scale: dict) -> dict:
     # Elipse: decompõe os fatores horizontal/vertical com base no ângulo de rotação da elipse
     ellipse_angle_deg = metrics_px.get("ellipse_angle", 0.0)
     theta_el = np.radians(ellipse_angle_deg)
-    
+
     # Fator de escala para a maior dimensão (major)
     denom_el_major = (np.cos(theta_el) / px_h) ** 2 + (np.sin(theta_el) / px_v) ** 2
     px_el_major = 1.0 / np.sqrt(denom_el_major) if denom_el_major > 0 else px_avg
-    
+
     # Fator de escala para a menor dimensão (minor)
     denom_el_minor = (np.sin(theta_el) / px_h) ** 2 + (np.cos(theta_el) / px_v) ** 2
     px_el_minor = 1.0 / np.sqrt(denom_el_minor) if denom_el_minor > 0 else px_avg
@@ -745,70 +284,3 @@ def convert_measurements(metrics_px: dict, scale: dict) -> dict:
     metrics_mm["view_mode"] = scale["view_mode"]
 
     return metrics_mm
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Fallback: seleção manual
-# ──────────────────────────────────────────────────────────────────────────────
-
-def manual_scale_calibration(image: np.ndarray, view_mode: str = "top") -> dict:
-    """
-    Calibração manual de escala via seleção interativa dos 4 cantos do MDF.
-    
-    O usuário arrasta os 4 cantos da base MDF na imagem. A escala é calculada
-    pelo tamanho nominal de 300 × 230 mm da base de MDF.
-
-    Args:
-        image: Imagem para calibração (BGR).
-        view_mode: "top" ou "side".
-
-    Returns:
-        Dict com fatores de escala (mesmo formato de calibrate_scale) e cantos do MDF.
-    """
-    import sys
-    is_testing = "pytest" in sys.modules
-
-    if is_testing:
-        # Fallback determinístico para testes automáticos
-        return {
-            "px_per_mm_h": 11.5,
-            "px_per_mm_v": 11.5,
-            "anisotropy": 0.0,
-            "linearity_h": 0.0,
-            "linearity_v": 0.0,
-            "n_points": 4,
-            "view_mode": view_mode,
-            "mdf_corners": np.float32([[100, 100], [100 + 300*11.5, 100], [100 + 300*11.5, 100 + 230*11.5], [100, 100 + 230*11.5]])
-        }
-
-    import interactive
-    logger.info("Iniciando calibração manual interativa via cantos do MDF...")
-    corners = interactive.calibrate_mdf_manually(
-        image,
-        window_title=f"Calibracao Manual (Borda do MDF) - Vista {view_mode.upper()}"
-    )
-
-    if corners is None:
-        raise MetrologyError("Calibração manual cancelada pelo usuário")
-
-    # Calcular distâncias médias horizontal e vertical em pixels a partir dos 4 cantos
-    # corners[0]: TL, corners[1]: TR, corners[2]: BR, corners[3]: BL
-    dist_h = (np.linalg.norm(corners[0] - corners[1]) + np.linalg.norm(corners[3] - corners[2])) / 2.0
-    dist_v = (np.linalg.norm(corners[0] - corners[3]) + np.linalg.norm(corners[1] - corners[2])) / 2.0
-
-    px_per_mm_h = (dist_h / config.MDF_WIDTH_MM) * getattr(config, "SCALE_CORRECTION_FACTOR_H", 1.0)
-    px_per_mm_v = (dist_v / config.MDF_HEIGHT_MM) * getattr(config, "SCALE_CORRECTION_FACTOR_V", 1.0)
-    anisotropy = abs(px_per_mm_h - px_per_mm_v) / max(px_per_mm_h, px_per_mm_v)
-
-    logger.info(f"  ✓ Manual: px_per_mm_h={px_per_mm_h:.4f}, px_per_mm_v={px_per_mm_v:.4f}")
-
-    return {
-        "px_per_mm_h": px_per_mm_h,
-        "px_per_mm_v": px_per_mm_v,
-        "anisotropy": anisotropy,
-        "linearity_h": 0.0,
-        "linearity_v": 0.0,
-        "n_points": 4,
-        "view_mode": view_mode,
-        "mdf_corners": corners
-    }

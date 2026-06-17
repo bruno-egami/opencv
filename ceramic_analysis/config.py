@@ -23,28 +23,17 @@ SQUARE_SIZE_MM = 20.0        # Tamanho real de cada quadrado em mm
 MIN_CALIBRATION_IMAGES = 3   # Mínimo de imagens com checkerboard detectado
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GRADE NO MDF (calibração de escala — por sessão)
-# Base: 300 × 230 mm, grade 20 × 20 mm gravada a laser (linhas pretas)
+# BLOCO PADRÃO DE CALIBRAÇÃO (referência de escala coplanar)
+# Bloco posicionado ao lado da peça com face no mesmo plano da face a medir.
+# Padrão xadrez assimétrico (9×8 quadrados) impresso na face exposta.
 # ══════════════════════════════════════════════════════════════════════════════
-MDF_WIDTH_MM = 300.0         # Largura da base MDF em mm
-MDF_HEIGHT_MM = 230.0        # Altura da base MDF em mm
-GRID_SPACING_MM = 20.0       # Espaçamento da grade em mm
-
-# Cálculo das interseções internas:
-# Eixo X: 300 / 20 = 15 células → 16 linhas → 14 interseções internas
-# Eixo Y: 230 / 20 = 11.5 → 11 células completas (220mm) + 1 parcial (10mm)
-#         → 12 linhas completas → 10 interseções internas
-# A célula parcial de 10mm na borda Y é ignorada na calibração.
-GRID_INTERSECTIONS_X = 14
-GRID_INTERSECTIONS_Y = 10
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CORREÇÃO DE PARALAXE (vista lateral)
-# Quando a grade vertical está posicionada atrás da peça, há uma diferença
-# de profundidade que causa erro de escala. Medir o gap com paquímetro 1×.
-# Se a grade estiver no mesmo plano da peça, definir como 0.0.
-# ══════════════════════════════════════════════════════════════════════════════
-SIDE_GRID_GAP_MM = 6.0       # Distância entre a face da peça e a grade (mm)
+CALIB_BLOCK_PATTERN_SIZE = (8, 7)   # (colunas, linhas) de cantos INTERNOS
+                                     # Para 9×8 quadrados → 8×7 interseções
+CALIB_BLOCK_SQUARE_SIZE_MM = 6.0    # Tamanho de cada quadrado em mm
+CALIB_BLOCK_BORDER_MM = 3.0         # Borda branca ao redor do padrão (mm)
+# Dimensões externas do bloco (calculadas):
+# Largura = 9 × 6 + 2 × 3 = 60 mm
+# Altura  = 8 × 6 + 2 × 3 = 54 mm
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PRÉ-PROCESSAMENTO
@@ -169,12 +158,8 @@ INTERACTIVE_VERTEX_RADIUS = 8       # Raio dos círculos dos vértices (px)
 INTERACTIVE_SNAP_DISTANCE = 15      # Distância máxima para "grudar" em um vértice (px)
 INTERACTIVE_CALIBRATION = True      # Ativar calibração interativa de grade/MDF
 
-# ── Fatores de correção de escala (ajuste fino) ──
-# Útil para compensar pequenas distorções ópticas ou alongamentos no centro
-# causados pela lente ou pelo software de pós-processamento de celulares.
-# Valores maiores que 1.0 aumentam o px_per_mm (resultando em mm medidos menores).
-SCALE_CORRECTION_FACTOR_H = 1.0381     # Ajuste fino horizontal (para calibrar de ~53.0 a 51.0 mm)
-SCALE_CORRECTION_FACTOR_V = 1.0330     # Ajuste fino vertical (para calibrar de ~39.2 a 38.0 mm)
+# Os fatores de ajuste fino de escala não são mais necessários na calibração coplanar
+# pois a face de calibração está no mesmo plano da peça a ser medida.
 
 
 

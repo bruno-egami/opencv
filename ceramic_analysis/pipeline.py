@@ -293,94 +293,15 @@ def cmd_process(args):
 
                 background = bg_img
 
-                # Detectar grade e calibrar escala
-                try:
-                    camera_matrix = None
-                    try:
-                        camera_matrix, _ = calibrate_module.load_calibration()
-                    except FileNotFoundError:
-                        pass
-
-                    grid_points = metrology.detect_grid(bg_img)
-                    import sys
-                    is_testing = "pytest" in sys.modules
-                    if config.INTERACTIVE_CALIBRATION and not is_testing:
-                        grid_points, was_adjusted = interactive.adjust_grid_points(
-                            bg_img, grid_points,
-                            window_title=f"Ajuste da Grade de Calibracao - {view.upper()}",
-                            cache_key=bg_path.name
-                        )
-                    if grid_points is None:
-                        raise metrology.MetrologyError("Grade automatica rejeitada pelo usuario.")
-                    scale = metrology.calibrate_scale(
-                        grid_points, view_mode=view,
-                        camera_matrix=camera_matrix
-                    )
-
-                    # Correção de perspectiva se solicitada
-                    if args.perspective_correction:
-                        logger.info("Aplicando correção de perspectiva...")
-                        bg_img, H = metrology.correct_perspective(
-                            bg_img, grid_points, output_px_per_mm=scale["px_per_mm_h"]
-                        )
-                        background = bg_img
-                        # O fator de escala horizontal e vertical tornam-se idênticos (isotrópicos)
-                        scale["px_per_mm_v"] = scale["px_per_mm_h"]
-                        scale["anisotropy"] = 0.0
-
-                        # Calcular máscara para a área interna da grade (evita ruídos do fundo)
-                        rows = metrology._organize_into_rows(grid_points)
-                        rows = [r for r in rows if len(r) >= 4]
-                        n_rows = len(rows)
-                        n_cols = min(len(r) for r in rows) if rows else 0
-                        if n_rows >= 2 and n_cols >= 2:
-                            x_max = int((n_cols - 1) * 20.0 * scale["px_per_mm_h"] + 50)
-                            y_max = int((n_rows - 1) * 20.0 * scale["px_per_mm_h"] + 50)
-                            h_bg, w_bg = background.shape[:2]
-                            grid_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
-                            grid_mask[50:y_max, 50:x_max] = 255
-                            background = cv2.bitwise_and(background, background, mask=grid_mask)
-
-                except metrology.MetrologyError as e:
-                    logger.warning(f"Falha na detecção da grade: {e}")
-                    logger.warning("Tentando calibração manual...")
-                    try:
-                        scale = metrology.manual_scale_calibration(bg_img, view)
-                        if args.perspective_correction and scale is not None and "mdf_corners" in scale:
-                            logger.info("Aplicando correção de perspectiva (manual)...")
-                            corners = scale["mdf_corners"]
-                            px_per_mm = scale["px_per_mm_h"]
-                            dst_pts = np.float32([
-                                [50, 50],
-                                [50 + config.MDF_WIDTH_MM * px_per_mm, 50],
-                                [50 + config.MDF_WIDTH_MM * px_per_mm, 50 + config.MDF_HEIGHT_MM * px_per_mm],
-                                [50, 50 + config.MDF_HEIGHT_MM * px_per_mm]
-                            ])
-                            H = cv2.getPerspectiveTransform(corners, dst_pts)
-                            bg_img = cv2.warpPerspective(bg_img, H, (int(config.MDF_WIDTH_MM * px_per_mm + 100), int(config.MDF_HEIGHT_MM * px_per_mm + 100)))
-                            background = bg_img
-                            scale["px_per_mm_v"] = scale["px_per_mm_h"]
-                            scale["anisotropy"] = 0.0
-                    except metrology.MetrologyError:
-                        logger.error("Calibração de escala falhou. Usando pixels.")
-                        scale = {
-                            "px_per_mm_h": 1.0, "px_per_mm_v": 1.0,
-                            "anisotropy": 0.0, "linearity_h": 0.0,
-                            "linearity_v": 0.0, "n_points": 0,
-                            "view_mode": view
-                        }
+                # O background é apenas carregado e undistorted. A calibração de escala
+                # agora é feita diretamente nas fotos da peça usando o bloco padrão coplanar.
+                pass
         else:
             logger.warning(
                 f"Nenhuma imagem de background encontrada para vista '{view}'.\n"
                 f"  Esperado em: {bg_dir}\n"
                 f"  A subtração de fundo não será utilizada."
             )
-            scale = {
-                "px_per_mm_h": 1.0, "px_per_mm_v": 1.0,
-                "anisotropy": 0.0, "linearity_h": 0.0,
-                "linearity_v": 0.0, "n_points": 0,
-                "view_mode": view
-            }
 
         # Processar cada estado (wet/dry)
         for state in states:
@@ -409,15 +330,35 @@ def cmd_process(args):
                         equalize=equalize
                     )
 
-                    # Aplicar correção de perspectiva se H estiver disponível
-                    if args.perspective_correction and H is not None:
-                        h_bg, w_bg = background.shape[:2]
-                        gray = cv2.warpPerspective(gray, H, (w_bg, h_bg))
-                        color = cv2.warpPerspective(color, H, (w_bg, h_bg))
+                    # 1b. Calibração de escala via bloco padrão coplanar na própria imagem
+                    try:
+                        auto_corners = metrology.detect_calibration_block(color)
                         
-                        if grid_mask is not None:
-                            gray = cv2.bitwise_and(gray, grid_mask)
-                            color = cv2.bitwise_and(color, color, mask=grid_mask)
+                        import sys
+                        is_testing = "pytest" in sys.modules
+                        if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
+                            corners = interactive.validate_calibration_block_grid(
+                                color, auto_corners,
+                                pattern_size=config.CALIB_BLOCK_PATTERN_SIZE,
+                                cache_key=img_path.name
+                            )
+                            if corners is None:
+                                raise metrology.MetrologyError("Calibração de bloco rejeitada/cancelada pelo usuário.")
+                        else:
+                            if auto_corners is None:
+                                raise metrology.MetrologyError("Bloco de calibração não detectado automaticamente.")
+                            corners = auto_corners
+                        
+                        scale = metrology.calibrate_scale_from_block(corners)
+                    except metrology.MetrologyError as e:
+                        logger.warning(f"Calibração de escala falhou para {img_path.name}: {e}")
+                        logger.warning("Usando pixels como unidade padrão (1.0 px/mm)")
+                        scale = {
+                            "px_per_mm_h": 1.0, "px_per_mm_v": 1.0,
+                            "anisotropy": 0.0, "linearity_h": 0.0,
+                            "linearity_v": 0.0, "n_points": 0,
+                            "view_mode": view
+                        }
 
                     # 2. Segmentação
                     seg_results = segmentation.segment(
@@ -668,78 +609,6 @@ def cmd_cad_compare(args):
             logger.warning(f"  Nenhuma foto de vista '{photo_view}' disponível para comparação com a vista CAD '{view}'")
             continue
 
-        # Calcular matriz de perspectiva e máscara para esta vista se solicitado
-        H = None
-        grid_mask = None
-        if args.perspective_correction:
-            bg_dir = session_dir / "converted" / "background" / photo_view
-            bg_images = find_images(str(bg_dir))
-            if bg_images:
-                bg_path = bg_images[0]
-                ext = Path(bg_path).suffix.lower()
-                flags = cv2.IMREAD_UNCHANGED if ext in [".tiff", ".tif"] else cv2.IMREAD_COLOR
-                bg_img = cv2.imread(str(bg_path), flags)
-                if bg_img is not None:
-                    if bg_img.dtype == np.uint16:
-                        bg_img = preprocessing.normalize_16bit_to_8bit(bg_img)
-                    try:
-                        mtx, dist = calibrate_module.load_calibration()
-                        bg_img = preprocessing.undistort_image(bg_img, mtx, dist)
-                    except FileNotFoundError:
-                        pass
-                    
-                    try:
-                        grid_points = metrology.detect_grid(bg_img)
-                        import sys
-                        is_testing = "pytest" in sys.modules
-                        if config.INTERACTIVE_CALIBRATION and not is_testing:
-                            grid_points, was_adjusted = interactive.adjust_grid_points(
-                                bg_img, grid_points,
-                                window_title=f"Ajuste da Grade de Calibracao - {photo_view.upper()}",
-                                cache_key=Path(bg_path).name
-                            )
-                        if grid_points is None:
-                            raise Exception("Grade automatica rejeitada pelo usuario.")
-                        px_h = matching_measurements[0]["px_per_mm_h"]
-                        bg_rect, H = metrology.correct_perspective(bg_img, grid_points, output_px_per_mm=px_h)
-                        
-                        rows = metrology._organize_into_rows(grid_points)
-                        rows = [r for r in rows if len(r) >= 4]
-                        n_rows = len(rows)
-                        n_cols = min(len(r) for r in rows) if rows else 0
-                        if n_rows >= 2 and n_cols >= 2:
-                            x_max = int((n_cols - 1) * 20.0 * px_h + 50)
-                            y_max = int((n_rows - 1) * 20.0 * px_h + 50)
-                            h_bg, w_bg = bg_rect.shape[:2]
-                            grid_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
-                            grid_mask[50:y_max, 50:x_max] = 255
-                    except Exception as e:
-                        logger.warning(f"  Falha ao calcular H via grade: {e}. Tentando fallback manual...")
-                        try:
-                            import sys
-                            is_testing = "pytest" in sys.modules
-                            if config.INTERACTIVE_CALIBRATION and not is_testing:
-                                corners = interactive.calibrate_mdf_manually(
-                                    bg_img,
-                                    window_title=f"Calibracao Manual (Borda do MDF) - Vista {photo_view.upper()}",
-                                    cache_key=Path(bg_path).name
-                                )
-                                if corners is not None:
-                                    px_h = matching_measurements[0]["px_per_mm_h"]
-                                    dst_pts = np.float32([
-                                        [50, 50],
-                                        [50 + config.MDF_WIDTH_MM * px_h, 50],
-                                        [50 + config.MDF_WIDTH_MM * px_h, 50 + config.MDF_HEIGHT_MM * px_h],
-                                        [50, 50 + config.MDF_HEIGHT_MM * px_h]
-                                    ])
-                                    H = cv2.getPerspectiveTransform(corners, dst_pts)
-                                    bg_rect = cv2.warpPerspective(bg_img, H, (int(config.MDF_WIDTH_MM * px_h + 100), int(config.MDF_HEIGHT_MM * px_h + 100)))
-                                    h_bg, w_bg = bg_rect.shape[:2]
-                                    grid_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
-                                    grid_mask[50:h_bg-50, 50:w_bg-50] = 255
-                        except Exception as manual_err:
-                            logger.warning(f"  Falha no fallback manual para comparação CAD: {manual_err}")
-
         for m in matching_measurements:
             state = m["state"]
             sample_id = m["sample_id"]
@@ -763,13 +632,6 @@ def cmd_cad_compare(args):
                 photo_image = preprocessing.undistort_image(photo_image, mtx, dist)
             except FileNotFoundError:
                 pass
-
-            # Aplicar perspectiva e máscara se H estiver disponível
-            if args.perspective_correction and H is not None:
-                h_bg, w_bg = grid_mask.shape if grid_mask is not None else (photo_image.shape[0], photo_image.shape[1])
-                photo_image = cv2.warpPerspective(photo_image, H, (w_bg, h_bg))
-                if grid_mask is not None:
-                    photo_image = cv2.bitwise_and(photo_image, photo_image, mask=grid_mask)
 
             # Extrair contorno da foto em mm
             photo_contour_px = np.squeeze(m["contour"])
@@ -1030,10 +892,7 @@ Exemplos:
         default="auto",
         help="Estratégia de segmentação (default: auto)"
     )
-    p_proc.add_argument(
-        "--perspective-correction", action="store_true",
-        help="Aplicar correção de perspectiva via homografia"
-    )
+# --perspective-correction removed (no longer needed)
     p_proc.add_argument(
         "--no-annotate", action="store_true",
         help="Pular geração de imagens anotadas"
@@ -1046,7 +905,7 @@ Exemplos:
     p_analyze.add_argument("--view", choices=["top", "side", "both"], default="both")
     p_analyze.add_argument("--state", choices=["wet", "dry", "both"], default="both")
     p_analyze.add_argument("--strategy", default="auto")
-    p_analyze.add_argument("--perspective-correction", action="store_true")
+# --perspective-correction removed
     p_analyze.add_argument("--no-annotate", action="store_true", default=False)
 
     # full
@@ -1059,7 +918,7 @@ Exemplos:
         choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
         default="auto"
     )
-    p_full.add_argument("--perspective-correction", action="store_true")
+# --perspective-correction removed
     p_full.add_argument("--no-annotate", action="store_true", default=False)
     p_full.add_argument("--cad", default=None, help="Caminho para o modelo CAD (.stl/.step/.stp) para comparacao")
     p_full.add_argument(
@@ -1087,7 +946,7 @@ Exemplos:
         choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
         default="auto"
     )
-    p_cad.add_argument("--perspective-correction", action="store_true")
+# --perspective-correction removed
     p_cad.add_argument("--registration", choices=["icp", "centroid", "bbox_center"], default=None)
     p_cad.add_argument("--tolerance", type=float, default=None, help="Tolerancia limite de desvio (mm)")
 

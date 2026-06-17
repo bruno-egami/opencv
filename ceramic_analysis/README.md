@@ -1,27 +1,10 @@
-# OpenCV — Fork para Análise Cerâmica
+# Ceramic Analysis Pipeline
 
-Este repositório é um **fork** da biblioteca original **OpenCV (Open Source Computer Vision Library)** contendo um subprojeto específico para metrologia dimensional e análise de retração de corpos de prova cerâmicos fabricados por manufatura aditiva (FDM/DIW).
-
-O código do pipeline de análise está localizado na pasta [ceramic_analysis/](ceramic_analysis/).
+Este subprojeto foi desenvolvido para comparar automaticamente as dimensões de peças cerâmicas no estado **seco** e **úmido**, além de permitir a **comparação de fidelidade tridimensional com o modelo CAD de referência (STL e STEP)**, calculando a **retração percentual** e os desvios geométricos.
 
 ---
 
-## Recursos do Projeto Original (OpenCV)
-
-*   **Homepage:** <https://opencv.org>
-*   **Documentação:** <https://docs.opencv.org/4.x/>
-*   **Repositório Original:** <https://github.com/opencv/opencv>
-*   **Licença:** [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
-
-Para contribuir com a biblioteca base OpenCV, leia as [diretrizes de contribuição](https://github.com/opencv/opencv/wiki/How_to_contribute).
-
----
-
-## Ceramic Analysis Pipeline (Instruções do Fork)
-
-O subprojeto contido no diretório `ceramic_analysis/` foi desenvolvido para comparar automaticamente as dimensões de peças cerâmicas no estado **úmido** (pós-impressão) e **seco** (pós-secagem), além de permitir a **comparação de fidelidade tridimensional com o modelo CAD de referência (STL e STEP)**, calculando a **retração percentual** e os desvios geométricos.
-
-### Funcionalidades
+## Funcionalidades
 
 - 📷 **Conversão RAW** — Arquivos `.NEF` (Nikon) → TIFF 16-bit via `rawpy`
 - 🔧 **Calibração de câmera** — Checkerboard 9×6 com `cv2.calibrateCamera`
@@ -38,7 +21,9 @@ O subprojeto contido no diretório `ceramic_analysis/` foi desenvolvido para com
 - 🖼️ **Imagens Anotadas com Cotas** — Desenho de cotas gráficas de engenharia (linhas de cota, extensão, ticks de 45° e o valor medido em mm) diretamente sobre a imagem final no perímetro do bounding box da peça, garantindo saídas autoexplicativas e profissionais.
 - ✅ **Validação ImageJ** — Máscaras binárias salvas em PNG para inspeção independente
 
-### Estrutura da pasta `ceramic_analysis/`
+---
+
+## Estrutura do Subprojeto
 
 ```
 ceramic_analysis/
@@ -51,45 +36,49 @@ ceramic_analysis/
 ├── segmentation.py           # Segmentação (com auto-inversão e ordenação)
 ├── metrology.py              # Detecção e calibração de escala via bloco padrão coplanar
 ├── analysis.py               # Retração, CSV, anotações de cotas e metadados
-├── requirements.txt          # Inclui dependências de CAD (trimesh, cadquery, shapely, scipy)
+├── requirements.txt          # Dependências do projeto (opencv, cadquery, shapely, scipy, trimesh)
 ├── data/                     # Imagens do checkerboard, background e sessões
 └── tests/
     └── test_pipeline.py      # 61 testes unitários
 ```
 
-### Instalação e Preparação
+---
 
-Antes de rodar os comandos, navegue para a pasta `ceramic_analysis/`:
+## Instalação e Preparação
+
+Navegue para esta pasta e instale os pacotes necessários:
 
 ```bash
 cd ceramic_analysis
 pip install -r requirements.txt
 ```
 
-### Guia Rápido de Uso
+---
 
-*Sempre execute os comandos CLI de dentro do diretório `ceramic_analysis/`.*
+## Guia Rápido de Uso
 
-#### 1. Calibração da câmera (executar uma vez)
+*Sempre execute os comandos CLI de dentro deste diretório.*
+
+### 1. Calibração da câmera (executar uma vez)
 Coloque 10-15 fotos `.NEF` do checkerboard de calibração em `data/calibration/raw/`:
 ```bash
 python pipeline.py calibrate
 ```
 Saída: `output/calibration_params.yaml`. Meta: RMS de reprojeção < 0.5 px.
 
-#### 2. Criar uma sessão de captura
+### 2. Criar uma sessão de captura
 ```bash
 python pipeline.py create-session --session 20250612
 ```
 Isso cria a estrutura de diretórios em `data/sessions/session_20250612/` incluindo a pasta `cad/`. Copie os arquivos `.NEF` e os arquivos do modelo CAD para suas respectivas pastas.
 
-#### 3. Executar o pipeline completo (com Comparação CAD)
+### 3. Executar o pipeline completo (com Comparação CAD)
 Ao fornecer o modelo CAD, o pipeline rodará automaticamente a comparação geométrica tridimensional na 5ª etapa:
 ```bash
 python pipeline.py full --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl
 ```
 
-#### 4. Comandos Individuais e CAD
+### 4. Comandos Individuais e CAD
 ```bash
 # Apenas processar sem análise comparativa
 python pipeline.py process --session 20250612 --view top --state wet
@@ -101,18 +90,12 @@ python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20
 python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl --view all --tolerance 1.5
 ```
 
-### Testes Unitários
+---
+
+## Testes Unitários
 
 Para garantir a corretude do código e as novas validações matemáticas e de geometria CAD:
 ```bash
 python -m pytest tests/test_pipeline.py -v
 ```
 Todos os 61 testes unitários utilizam dados sintéticos e passam sem exigir imagens reais ou conexões físicas.
-
----
-
-## Licença
-
-Este é um projeto acadêmico desenvolvido no âmbito do Mestrado em Engenharia de Materiais do IFRS.
-
-Como este subprojeto está hospedado e utiliza a biblioteca [OpenCV](https://github.com/opencv/opencv), ele adere e faz menção à licença original do projeto: a **[Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)**. O código do pipeline desenvolvido nesta pasta é livre para uso científico e acadêmico sob os mesmos termos.
