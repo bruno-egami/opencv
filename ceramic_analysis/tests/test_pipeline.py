@@ -368,6 +368,42 @@ class TestMetrology:
         assert abs(metrics_mm["bbox_h_mm"] - 50.0) < 0.1
         assert abs(metrics_mm["area_mm2"] - 5000.0) < 1.0
         assert abs(metrics_mm["perimeter_mm"] - 300.0) < 0.1
+        assert abs(metrics_mm["min_rect_w_mm"] - 100.0) < 0.1
+        assert abs(metrics_mm["min_rect_h_mm"] - 50.0) < 0.1
+        assert abs(metrics_mm["ellipse_major_mm"] - 100.0) < 0.1
+        assert abs(metrics_mm["ellipse_minor_mm"] - 50.0) < 0.1
+
+        # Caso anisotrópico e rotacionado
+        scale_aniso = {
+            "px_per_mm_h": 2.0,
+            "px_per_mm_v": 4.0,
+            "anisotropy": 0.5,
+            "view_mode": "top",
+        }
+
+        # Orientação a -90 graus (como o espécime do usuário)
+        metrics_px_rotated = {
+            "bbox_w": 200,
+            "bbox_h": 400,
+            "area_px": 80000,
+            "perimeter_px": 1200,
+            "min_rect_w": 400,   # orientação vertical -> deve usar px_per_mm_v = 4.0
+            "min_rect_h": 200,   # orientação horizontal -> deve usar px_per_mm_h = 2.0
+            "min_rect_angle": -90.0,
+            "ellipse_major_px": 400,
+            "ellipse_minor_px": 200,
+            "ellipse_angle": -90.0,
+        }
+
+        metrics_mm_aniso = convert_measurements(metrics_px_rotated, scale_aniso)
+        # min_rect_w_mm = 400 / 4.0 = 100.0
+        assert abs(metrics_mm_aniso["min_rect_w_mm"] - 100.0) < 0.1
+        # min_rect_h_mm = 200 / 2.0 = 100.0
+        assert abs(metrics_mm_aniso["min_rect_h_mm"] - 100.0) < 0.1
+        # ellipse_major_mm = 400 / 4.0 = 100.0
+        assert abs(metrics_mm_aniso["ellipse_major_mm"] - 100.0) < 0.1
+        # ellipse_minor_mm = 200 / 2.0 = 100.0
+        assert abs(metrics_mm_aniso["ellipse_minor_mm"] - 100.0) < 0.1
 
     def test_sort_grid_points(self):
         """Pontos desordenados são organizados em ordem de leitura."""
@@ -678,8 +714,8 @@ class TestIntegration:
         assert corrected[0, 0] == 0
         assert corrected[50, 50] == 255
 
-    def test_contour_sorting_horizontal(self):
-        """Testa se múltiplos contornos são ordenados da esquerda para a direita."""
+    def test_contour_sorting_by_score(self):
+        """Testa se múltiplos contornos são ordenados pelo score (área × proximidade do centro)."""
         # Três retângulos com áreas de 10.000 px² (> 5.000 px² de limiar mínimo)
         img = np.zeros((300, 800), dtype=np.uint8)
         cv2.rectangle(img, (500, 100), (600, 200), 255, -1)  # Centroide X ≈ 550
@@ -690,9 +726,9 @@ class TestIntegration:
         results = segment(img, color, "sort_test", save_mask=False)
 
         assert len(results) == 3
-        # Os resultados devem estar em ordem crescente de coordenada X (100, 300, 500)
+        # Devem estar ordenados pelo score: mais perto do centro (300), depois (500), depois (100)
         x_coords = [r["bbox_x"] for r in results]
-        assert x_coords == [100, 300, 500]
+        assert x_coords == [300, 500, 100]
         assert results[0]["contour_index"] == 0
         assert results[1]["contour_index"] == 1
         assert results[2]["contour_index"] == 2
@@ -958,3 +994,41 @@ class TestCadComparison:
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+
+
+def test_find_checkerboard_mocked_interactive(monkeypatch):
+    """Testa find_checkerboard com interacao manual mockada."""
+    import calibrate
+    import interactive
+    
+    img = np.zeros((100, 100), dtype=np.uint8)
+    
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+    
+    try:
+        cv2.imwrite(tmp_path, img)
+        
+        # 1. Mockar as funcoes interativas
+        mock_corners = np.array([[10, 10], [90, 10], [90, 90], [10, 90]], dtype=np.float32)
+        monkeypatch.setattr(interactive, "select_checkerboard_corners_manually", lambda *args, **kwargs: mock_corners)
+        monkeypatch.setattr(interactive, "fine_tune_checkerboard_grid", lambda img_val, pts, *args, **kwargs: (pts, True))
+        
+        # 2. Simular que nao estamos no pytest para forcar use_interactive a ser True
+        original_modules = sys.modules.copy()
+        if "pytest" in sys.modules:
+            del sys.modules["pytest"]
+            
+        try:
+            monkeypatch.setattr(config, "INTERACTIVE_CALIBRATION", True)
+            found, corners, gray = calibrate.find_checkerboard(tmp_path, (14, 10))
+            
+            assert found is True
+            assert corners is not None
+            assert corners.shape == (140, 1, 2)
+        finally:
+            sys.modules.update(original_modules)
+            
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

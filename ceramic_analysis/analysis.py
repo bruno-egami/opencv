@@ -450,14 +450,20 @@ def annotate_image(
         if "circularity" in metrics:
             texts.append(f"Circ: {metrics['circularity']:.3f}")
 
-        # Posicionar texto no canto superior esquerdo
-        y_offset = 30
+        # Posicionar texto no canto superior esquerdo (calculado dinamicamente para não cortar)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (tw_temp, th_temp), baseline_temp = cv2.getTextSize("Ag", font, font_scale, thickness)
+        
+        # Margens horizontais e verticais escalonadas com base na fonte para evitar cortes nas bordas
+        x_start = int(25 * font_scale)
+        y_offset = int(th_temp + 25 * font_scale)
+        
         for text in texts:
             _draw_text_with_bg(
-                annotated, text, (10, y_offset),
+                annotated, text, (x_start, y_offset),
                 font_scale, COLOR_TEXT, COLOR_TEXT_BG, thickness
             )
-            y_offset += int(35 * font_scale) + 10
+            y_offset += int(35 * font_scale) + int(10 * font_scale)
 
     # Metadados de escala no canto inferior esquerdo
     if scale:
@@ -466,13 +472,14 @@ def annotate_image(
             f"px/mm H: {scale.get('px_per_mm_h', 0):.2f}",
             f"px/mm V: {scale.get('px_per_mm_v', 0):.2f}",
         ]
-        y_offset = h - 20
+        x_start = int(25 * font_scale)
+        y_offset_meta = h - int(25 * font_scale)
         for text in reversed(meta_texts):
             _draw_text_with_bg(
-                annotated, text, (10, y_offset),
+                annotated, text, (x_start, y_offset_meta),
                 font_scale * 0.7, (200, 200, 200), COLOR_TEXT_BG, max(1, thickness - 1)
             )
-            y_offset -= int(25 * font_scale) + 5
+            y_offset_meta -= int(25 * font_scale) + int(5 * font_scale)
 
     # Salvar
     output_path = Path(output_path)

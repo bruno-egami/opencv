@@ -46,6 +46,7 @@ import raw_converter
 import calibrate as calibrate_module
 import preprocessing
 import segmentation
+import interactive
 import metrology
 import analysis
 import cad_compare
@@ -269,12 +270,16 @@ def cmd_process(args):
 
         background = None
         scale = None
+        H = None
+        grid_mask = None
 
         if bg_images:
             bg_path = bg_images[0]  # Usar primeira imagem de background
             logger.info(f"Background: {bg_path.name}")
 
-            bg_img = cv2.imread(str(bg_path), cv2.IMREAD_UNCHANGED)
+            ext = Path(bg_path).suffix.lower()
+            flags = cv2.IMREAD_UNCHANGED if ext in [".tiff", ".tif"] else cv2.IMREAD_COLOR
+            bg_img = cv2.imread(str(bg_path), flags)
             if bg_img is not None:
                 if bg_img.dtype == np.uint16:
                     bg_img = preprocessing.normalize_16bit_to_8bit(bg_img)
@@ -297,6 +302,16 @@ def cmd_process(args):
                         pass
 
                     grid_points = metrology.detect_grid(bg_img)
+                    import sys
+                    is_testing = "pytest" in sys.modules
+                    if config.INTERACTIVE_CALIBRATION and not is_testing:
+                        grid_points, was_adjusted = interactive.adjust_grid_points(
+                            bg_img, grid_points,
+                            window_title=f"Ajuste da Grade de Calibracao - {view.upper()}",
+                            cache_key=bg_path.name
+                        )
+                    if grid_points is None:
+                        raise metrology.MetrologyError("Grade automatica rejeitada pelo usuario.")
                     scale = metrology.calibrate_scale(
                         grid_points, view_mode=view,
                         camera_matrix=camera_matrix
@@ -305,14 +320,47 @@ def cmd_process(args):
                     # Correção de perspectiva se solicitada
                     if args.perspective_correction:
                         logger.info("Aplicando correção de perspectiva...")
-                        bg_img, H = metrology.correct_perspective(bg_img, grid_points)
+                        bg_img, H = metrology.correct_perspective(
+                            bg_img, grid_points, output_px_per_mm=scale["px_per_mm_h"]
+                        )
                         background = bg_img
+                        # O fator de escala horizontal e vertical tornam-se idênticos (isotrópicos)
+                        scale["px_per_mm_v"] = scale["px_per_mm_h"]
+                        scale["anisotropy"] = 0.0
+
+                        # Calcular máscara para a área interna da grade (evita ruídos do fundo)
+                        rows = metrology._organize_into_rows(grid_points)
+                        rows = [r for r in rows if len(r) >= 4]
+                        n_rows = len(rows)
+                        n_cols = min(len(r) for r in rows) if rows else 0
+                        if n_rows >= 2 and n_cols >= 2:
+                            x_max = int((n_cols - 1) * 20.0 * scale["px_per_mm_h"] + 50)
+                            y_max = int((n_rows - 1) * 20.0 * scale["px_per_mm_h"] + 50)
+                            h_bg, w_bg = background.shape[:2]
+                            grid_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
+                            grid_mask[50:y_max, 50:x_max] = 255
+                            background = cv2.bitwise_and(background, background, mask=grid_mask)
 
                 except metrology.MetrologyError as e:
                     logger.warning(f"Falha na detecção da grade: {e}")
                     logger.warning("Tentando calibração manual...")
                     try:
                         scale = metrology.manual_scale_calibration(bg_img, view)
+                        if args.perspective_correction and scale is not None and "mdf_corners" in scale:
+                            logger.info("Aplicando correção de perspectiva (manual)...")
+                            corners = scale["mdf_corners"]
+                            px_per_mm = scale["px_per_mm_h"]
+                            dst_pts = np.float32([
+                                [50, 50],
+                                [50 + config.MDF_WIDTH_MM * px_per_mm, 50],
+                                [50 + config.MDF_WIDTH_MM * px_per_mm, 50 + config.MDF_HEIGHT_MM * px_per_mm],
+                                [50, 50 + config.MDF_HEIGHT_MM * px_per_mm]
+                            ])
+                            H = cv2.getPerspectiveTransform(corners, dst_pts)
+                            bg_img = cv2.warpPerspective(bg_img, H, (int(config.MDF_WIDTH_MM * px_per_mm + 100), int(config.MDF_HEIGHT_MM * px_per_mm + 100)))
+                            background = bg_img
+                            scale["px_per_mm_v"] = scale["px_per_mm_h"]
+                            scale["anisotropy"] = 0.0
                     except metrology.MetrologyError:
                         logger.error("Calibração de escala falhou. Usando pixels.")
                         scale = {
@@ -352,11 +400,24 @@ def cmd_process(args):
                 sample_id = extract_sample_id(img_path.name)
 
                 try:
+                    # Desativar equalização se usar estratégia que depende de cor/luminância original
+                    equalize = args.strategy in ["otsu", "adaptive"]
                     # 1. Pré-processamento
                     gray, color = preprocessing.preprocess(
                         str(img_path),
-                        save_undistorted=True
+                        save_undistorted=True,
+                        equalize=equalize
                     )
+
+                    # Aplicar correção de perspectiva se H estiver disponível
+                    if args.perspective_correction and H is not None:
+                        h_bg, w_bg = background.shape[:2]
+                        gray = cv2.warpPerspective(gray, H, (w_bg, h_bg))
+                        color = cv2.warpPerspective(color, H, (w_bg, h_bg))
+                        
+                        if grid_mask is not None:
+                            gray = cv2.bitwise_and(gray, grid_mask)
+                            color = cv2.bitwise_and(color, color, mask=grid_mask)
 
                     # 2. Segmentação
                     seg_results = segmentation.segment(
@@ -364,6 +425,24 @@ def cmd_process(args):
                         background=background,
                         strategy=args.strategy
                     )
+
+                    # Ajuste manual interativo do contorno principal
+                    import sys
+                    is_testing = "pytest" in sys.modules
+                    if len(seg_results) > 0 and getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
+                        primary_metrics = seg_results[0]
+                        adjusted_contour, was_adjusted = interactive.adjust_contour(
+                            color,
+                            primary_metrics["contour"],
+                            window_title=f"Ajuste Manual - {img_path.name}"
+                        )
+                        if was_adjusted:
+                            logger.info(f"  → Contorno ajustado manualmente para {img_path.name}")
+                            # Recalcular métricas para o contorno ajustado
+                            new_metrics = segmentation.extract_contour_metrics(adjusted_contour)
+                            new_metrics["contour_index"] = primary_metrics.get("contour_index", 0)
+                            new_metrics["image_name"] = primary_metrics.get("image_name", img_path.stem)
+                            seg_results[0] = new_metrics
 
                     # 3. Converter para mm e coletar resultados
                     for metrics_px in seg_results:
@@ -382,9 +461,9 @@ def cmd_process(args):
 
                         all_results.append(metrics_mm)
 
-                        # 4. Anotar imagem
-                        if not args.no_annotate:
-                            ann_dir = Path(config.ANNOTATED_DIR) / args.session / view / state
+                        # 4. Anotar imagem (apenas para o contorno principal de maior score)
+                        if not args.no_annotate and metrics_px == seg_results[0]:
+                            ann_dir = Path(config.OUTPUT_DIR) / args.session / "annotated" / view / state
                             ann_path = ann_dir / f"{img_path.stem}_annotated.png"
                             draw_ellipse = metrics_mm.get("circularity", 0) > 0.7
                             analysis.annotate_image(
@@ -399,9 +478,17 @@ def cmd_process(args):
 
     # Exportar CSV com medições individuais
     if all_results:
-        csv_path = Path(config.OUTPUT_DIR) / f"measurements_{args.session}.csv"
+        csv_dir = Path(config.OUTPUT_DIR) / args.session
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = csv_dir / f"measurements_{args.session}.csv"
         analysis.export_csv(all_results, str(csv_path))
         logger.info(f"\n✓ {len(all_results)} medição(ões) salvas em {csv_path}")
+
+        try:
+            import generate_report
+            generate_report.generate_report(args.session)
+        except Exception as report_err:
+            logger.warning(f"Não foi possível gerar o relatório HTML automaticamente: {report_err}")
 
     return all_results
 
@@ -415,7 +502,7 @@ def cmd_analyze(args):
         return
 
     # Primeiro, processar se ainda não foi feito
-    measurements_csv = Path(config.OUTPUT_DIR) / f"measurements_{args.session}.csv"
+    measurements_csv = Path(config.OUTPUT_DIR) / args.session / f"measurements_{args.session}.csv"
 
     if not measurements_csv.exists():
         logger.info("Medições não encontradas. Executando processamento primeiro...")
@@ -473,12 +560,12 @@ def cmd_analyze(args):
         logger.info(f"{'═'*60}")
         combined = analysis.combine_views(top_results, side_results)
         if combined:
-            combined_csv = Path(config.OUTPUT_DIR) / f"combined_3d_{args.session}.csv"
+            combined_csv = Path(config.OUTPUT_DIR) / args.session / f"combined_3d_{args.session}.csv"
             analysis.export_csv(combined, str(combined_csv))
 
     # Exportar retração
     if all_comparisons:
-        shrinkage_csv = Path(config.OUTPUT_DIR) / f"shrinkage_{args.session}.csv"
+        shrinkage_csv = Path(config.OUTPUT_DIR) / args.session / f"shrinkage_{args.session}.csv"
         analysis.export_csv(
             all_comparisons, str(shrinkage_csv),
             columns=analysis.CSV_SHRINKAGE_COLUMNS
@@ -497,6 +584,12 @@ def cmd_analyze(args):
             logger.info(
                 f"  {sid}: ΔLargura={sw:.2f}%  ΔAltura={sh:.2f}%  ΔÁrea={sa:.2f}%"
             )
+
+        try:
+            import generate_report
+            generate_report.generate_report(args.session)
+        except Exception as report_err:
+            logger.warning(f"Não foi possível gerar o relatório HTML automaticamente: {report_err}")
 
 
 def cmd_cad_compare(args):
@@ -528,8 +621,8 @@ def cmd_cad_compare(args):
         session=args.session,
         view="both",  # Processa ambas as vistas (top e side)
         state=args.state,
-        strategy="auto",
-        perspective_correction=False,
+        strategy=getattr(args, "strategy", "auto"),
+        perspective_correction=getattr(args, "perspective_correction", False),
         no_annotate=True
     )
     measurements = cmd_process(proc_args)
@@ -575,6 +668,78 @@ def cmd_cad_compare(args):
             logger.warning(f"  Nenhuma foto de vista '{photo_view}' disponível para comparação com a vista CAD '{view}'")
             continue
 
+        # Calcular matriz de perspectiva e máscara para esta vista se solicitado
+        H = None
+        grid_mask = None
+        if args.perspective_correction:
+            bg_dir = session_dir / "converted" / "background" / photo_view
+            bg_images = find_images(str(bg_dir))
+            if bg_images:
+                bg_path = bg_images[0]
+                ext = Path(bg_path).suffix.lower()
+                flags = cv2.IMREAD_UNCHANGED if ext in [".tiff", ".tif"] else cv2.IMREAD_COLOR
+                bg_img = cv2.imread(str(bg_path), flags)
+                if bg_img is not None:
+                    if bg_img.dtype == np.uint16:
+                        bg_img = preprocessing.normalize_16bit_to_8bit(bg_img)
+                    try:
+                        mtx, dist = calibrate_module.load_calibration()
+                        bg_img = preprocessing.undistort_image(bg_img, mtx, dist)
+                    except FileNotFoundError:
+                        pass
+                    
+                    try:
+                        grid_points = metrology.detect_grid(bg_img)
+                        import sys
+                        is_testing = "pytest" in sys.modules
+                        if config.INTERACTIVE_CALIBRATION and not is_testing:
+                            grid_points, was_adjusted = interactive.adjust_grid_points(
+                                bg_img, grid_points,
+                                window_title=f"Ajuste da Grade de Calibracao - {photo_view.upper()}",
+                                cache_key=Path(bg_path).name
+                            )
+                        if grid_points is None:
+                            raise Exception("Grade automatica rejeitada pelo usuario.")
+                        px_h = matching_measurements[0]["px_per_mm_h"]
+                        bg_rect, H = metrology.correct_perspective(bg_img, grid_points, output_px_per_mm=px_h)
+                        
+                        rows = metrology._organize_into_rows(grid_points)
+                        rows = [r for r in rows if len(r) >= 4]
+                        n_rows = len(rows)
+                        n_cols = min(len(r) for r in rows) if rows else 0
+                        if n_rows >= 2 and n_cols >= 2:
+                            x_max = int((n_cols - 1) * 20.0 * px_h + 50)
+                            y_max = int((n_rows - 1) * 20.0 * px_h + 50)
+                            h_bg, w_bg = bg_rect.shape[:2]
+                            grid_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
+                            grid_mask[50:y_max, 50:x_max] = 255
+                    except Exception as e:
+                        logger.warning(f"  Falha ao calcular H via grade: {e}. Tentando fallback manual...")
+                        try:
+                            import sys
+                            is_testing = "pytest" in sys.modules
+                            if config.INTERACTIVE_CALIBRATION and not is_testing:
+                                corners = interactive.calibrate_mdf_manually(
+                                    bg_img,
+                                    window_title=f"Calibracao Manual (Borda do MDF) - Vista {photo_view.upper()}",
+                                    cache_key=Path(bg_path).name
+                                )
+                                if corners is not None:
+                                    px_h = matching_measurements[0]["px_per_mm_h"]
+                                    dst_pts = np.float32([
+                                        [50, 50],
+                                        [50 + config.MDF_WIDTH_MM * px_h, 50],
+                                        [50 + config.MDF_WIDTH_MM * px_h, 50 + config.MDF_HEIGHT_MM * px_h],
+                                        [50, 50 + config.MDF_HEIGHT_MM * px_h]
+                                    ])
+                                    H = cv2.getPerspectiveTransform(corners, dst_pts)
+                                    bg_rect = cv2.warpPerspective(bg_img, H, (int(config.MDF_WIDTH_MM * px_h + 100), int(config.MDF_HEIGHT_MM * px_h + 100)))
+                                    h_bg, w_bg = bg_rect.shape[:2]
+                                    grid_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
+                                    grid_mask[50:h_bg-50, 50:w_bg-50] = 255
+                        except Exception as manual_err:
+                            logger.warning(f"  Falha no fallback manual para comparação CAD: {manual_err}")
+
         for m in matching_measurements:
             state = m["state"]
             sample_id = m["sample_id"]
@@ -582,7 +747,9 @@ def cmd_cad_compare(args):
 
             # Carregar a imagem física
             img_path = session_dir / "converted" / state / photo_view / m["source_file"]
-            photo_image = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+            ext = Path(img_path).suffix.lower()
+            flags = cv2.IMREAD_UNCHANGED if ext in [".tiff", ".tif"] else cv2.IMREAD_COLOR
+            photo_image = cv2.imread(str(img_path), flags)
             if photo_image is None:
                 logger.error(f"  Não foi possível ler imagem: {img_path}")
                 continue
@@ -596,6 +763,13 @@ def cmd_cad_compare(args):
                 photo_image = preprocessing.undistort_image(photo_image, mtx, dist)
             except FileNotFoundError:
                 pass
+
+            # Aplicar perspectiva e máscara se H estiver disponível
+            if args.perspective_correction and H is not None:
+                h_bg, w_bg = grid_mask.shape if grid_mask is not None else (photo_image.shape[0], photo_image.shape[1])
+                photo_image = cv2.warpPerspective(photo_image, H, (w_bg, h_bg))
+                if grid_mask is not None:
+                    photo_image = cv2.bitwise_and(photo_image, photo_image, mask=grid_mask)
 
             # Extrair contorno da foto em mm
             photo_contour_px = np.squeeze(m["contour"])
@@ -644,7 +818,7 @@ def cmd_cad_compare(args):
                     cad_holes_px.append(hole_px)
 
             # Salvar imagem de desvio
-            out_dir = Path(config.OUTPUT_DIR) / "cad_comparison" / args.session
+            out_dir = Path(config.OUTPUT_DIR) / args.session / "cad_comparison"
             out_path = out_dir / f"{sample_id}_{state}_{view}_deviation.png"
             cad_compare.generate_deviation_map(
                 photo_image, cad_contour_px, photo_contour_px,
@@ -709,9 +883,17 @@ def cmd_cad_compare(args):
             all_results.append(res_dict)
 
     if all_results:
-        csv_path = Path(config.OUTPUT_DIR) / f"cad_comparison_{args.session}.csv"
+        csv_dir = Path(config.OUTPUT_DIR) / args.session
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = csv_dir / f"cad_comparison_{args.session}.csv"
         analysis.export_csv(all_results, str(csv_path), columns=analysis.CSV_CAD_COLUMNS)
         logger.info(f"\n✓ {len(all_results)} resultado(s) da comparacao CAD salvo(s) em {csv_path}")
+
+        try:
+            import generate_report
+            generate_report.generate_report(args.session)
+        except Exception as report_err:
+            logger.warning(f"Não foi possível gerar o relatório HTML automaticamente: {report_err}")
 
 
 def cmd_full(args):
@@ -764,6 +946,12 @@ def cmd_full(args):
     if hasattr(args, "cad") and args.cad:
         logger.info(f"  Desvios CAD em: {Path(config.OUTPUT_DIR) / 'cad_comparison'}")
 
+    try:
+        import generate_report
+        generate_report.generate_report(args.session)
+    except Exception as report_err:
+        logger.warning(f"Não foi possível gerar o relatório HTML automaticamente: {report_err}")
+
 
 def cmd_create_session(args):
     """Cria a estrutura de diretórios para uma nova sessão."""
@@ -776,6 +964,12 @@ def cmd_create_session(args):
         f"  2. Se desejar usar comparação CAD, copie o modelo para {session_dir / 'cad'}\n"
         f"  3. Execute: python pipeline.py full --session {args.session} [--cad {session_dir / 'cad' / 'modelo.stl'}]"
     )
+
+
+def cmd_report(args):
+    """Gera o relatório HTML da sessão."""
+    import generate_report
+    generate_report.generate_report(args.session)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -832,7 +1026,7 @@ Exemplos:
     )
     p_proc.add_argument(
         "--strategy",
-        choices=["background_sub", "lab", "otsu", "adaptive", "auto"],
+        choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
         default="auto",
         help="Estratégia de segmentação (default: auto)"
     )
@@ -862,7 +1056,7 @@ Exemplos:
     p_full.add_argument("--state", choices=["wet", "dry", "both"], default="both")
     p_full.add_argument(
         "--strategy",
-        choices=["background_sub", "lab", "otsu", "adaptive", "auto"],
+        choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
         default="auto"
     )
     p_full.add_argument("--perspective-correction", action="store_true")
@@ -888,8 +1082,18 @@ Exemplos:
         help="Vista(s) a comparar (default: top front)"
     )
     p_cad.add_argument("--state", choices=["wet", "dry", "both"], default="both")
+    p_cad.add_argument(
+        "--strategy",
+        choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
+        default="auto"
+    )
+    p_cad.add_argument("--perspective-correction", action="store_true")
     p_cad.add_argument("--registration", choices=["icp", "centroid", "bbox_center"], default=None)
     p_cad.add_argument("--tolerance", type=float, default=None, help="Tolerancia limite de desvio (mm)")
+
+    # report
+    p_rep = subparsers.add_parser("report", help="Gera relatório HTML da sessão")
+    p_rep.add_argument("--session", required=True, help="ID da sessão")
 
     return parser
 
@@ -911,6 +1115,7 @@ def main():
         "process": cmd_process,
         "analyze": cmd_analyze,
         "cad-compare": cmd_cad_compare,
+        "report": cmd_report,
         "full": cmd_full,
     }
 

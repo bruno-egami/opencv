@@ -57,7 +57,12 @@ def find_checkerboard(image_path: str, pattern_size: tuple) -> tuple:
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Imagem não encontrada: {image_path}")
 
-    img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+    ext = os.path.splitext(image_path)[1].lower()
+    if ext in ('.jpg', '.jpeg', '.png'):
+        img = cv2.imread(image_path)
+    else:
+        img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+
     if img is None:
         logger.error(f"Falha ao carregar imagem: {image_path}")
         return False, None, None
@@ -72,13 +77,112 @@ def find_checkerboard(image_path: str, pattern_size: tuple) -> tuple:
     else:
         gray = img
 
-    # Tentar detectar o checkerboard
+    # Tentar detectar o checkerboard na imagem original
     flags = (
         cv2.CALIB_CB_ADAPTIVE_THRESH
         + cv2.CALIB_CB_NORMALIZE_IMAGE
         + cv2.CALIB_CB_FAST_CHECK
     )
     found, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags)
+
+    # Se falhar, tentar sem o FAST_CHECK na resolução cheia
+    if not found:
+        flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+        found, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags_no_fast)
+
+    # Se ainda falhar, tentar com downscaling (0.25, depois 0.5) para lidar com alta resolução
+    if not found:
+        flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+        for scale in [0.25, 0.5]:
+            gray_sc = cv2.resize(gray, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            
+            # Tentar com FAST_CHECK primeiro
+            found, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags)
+            if not found:
+                # Tentar sem FAST_CHECK
+                found, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags_no_fast)
+            
+            if found:
+                # Projetar os cantos de volta para a escala original
+                corners = corners_sc / scale
+                break
+
+    # --- INÍCIO DO AJUSTE MANUAL INTERATIVO ---
+    import sys
+    is_testing = "pytest" in sys.modules
+    use_interactive = getattr(config, "INTERACTIVE_CALIBRATION", False) and not is_testing
+
+    if use_interactive:
+        import interactive
+        cols, rows = pattern_size
+        if len(img.shape) == 2:
+            img_color = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        else:
+            img_color = img.copy()
+
+        initial_points = None
+        if found:
+            corners_reshaped = corners.reshape(-1, 2)
+            tl = corners_reshaped[0]
+            tr = corners_reshaped[cols - 1]
+            br = corners_reshaped[cols * rows - 1]
+            bl = corners_reshaped[cols * (rows - 1)]
+            initial_corners = np.array([tl, tr, br, bl], dtype=np.float32)
+            
+            selected = interactive.select_checkerboard_corners_manually(
+                img_color,
+                window_title=f"Validar 4 Cantos do Checkerboard - {os.path.basename(image_path)}",
+                initial_corners=initial_corners
+            )
+            if selected is not None:
+                src_pts = np.array([
+                    [0, 0],
+                    [cols - 1, 0],
+                    [cols - 1, rows - 1],
+                    [0, rows - 1]
+                ], dtype=np.float32)
+                H, _ = cv2.findHomography(src_pts, selected)
+                grid_x, grid_y = np.meshgrid(np.arange(cols), np.arange(rows))
+                ideal_grid = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1).astype(np.float32)
+                projected_grid = cv2.perspectiveTransform(ideal_grid.reshape(-1, 1, 2), H)
+                initial_points = projected_grid.reshape(-1, 2)
+            else:
+                initial_points = corners_reshaped.copy()
+        else:
+            selected = interactive.select_checkerboard_corners_manually(
+                img_color,
+                window_title=f"Detecao Falhou: Calibracao Manual do Checkerboard - {os.path.basename(image_path)}"
+            )
+            if selected is not None:
+                src_pts = np.array([
+                    [0, 0],
+                    [cols - 1, 0],
+                    [cols - 1, rows - 1],
+                    [0, rows - 1]
+                ], dtype=np.float32)
+                H, _ = cv2.findHomography(src_pts, selected)
+                grid_x, grid_y = np.meshgrid(np.arange(cols), np.arange(rows))
+                ideal_grid = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1).astype(np.float32)
+                projected_grid = cv2.perspectiveTransform(ideal_grid.reshape(-1, 1, 2), H)
+                initial_points = projected_grid.reshape(-1, 2)
+
+        if initial_points is not None:
+            tuned_points, confirmed = interactive.fine_tune_checkerboard_grid(
+                img_color,
+                initial_points,
+                pattern_size=pattern_size,
+                window_title=f"Ajuste Fino da Malha do Checkerboard - {os.path.basename(image_path)}"
+            )
+            if confirmed:
+                corners = tuned_points.reshape(-1, 1, 2)
+                found = True
+            elif found:
+                # Se cancelou o ajuste fino, mas a detecção automática funcionou, mantemos os originais
+                pass
+            else:
+                corners = None
+                found = False
+    # --- FIM DO AJUSTE MANUAL INTERATIVO ---
 
     if found:
         # Refinamento subpixel dos cantos para maior precisão
@@ -222,13 +326,46 @@ def run_calibration(
         )
 
     logger.info(
-        f"Calibrando com {len(obj_points)}/{len(image_files)} imagens válidas..."
+        f"Calibrando (Primeira Passada) com {len(obj_points)}/{len(image_files)} imagens válidas..."
     )
 
-    # Executar calibração
-    rms, camera_matrix, dist_coefs, rvecs, tvecs = cv2.calibrateCamera(
-        obj_points, img_points, image_size, None, None
+    # Usar flags estáveis (Fix K2, Fix K3, Zero Tangential) para evitar overfitting em celulares/lentes planas
+    calib_flags = cv2.CALIB_FIX_K2 + cv2.CALIB_FIX_K3 + cv2.CALIB_ZERO_TANGENT_DIST
+
+    # Executar calibração da primeira passada
+    rms_init, camera_matrix_init, dist_coefs_init, rvecs_init, tvecs_init = cv2.calibrateCamera(
+        obj_points, img_points, image_size, None, None, flags=calib_flags
     )
+
+    # Filtrar imagens com erros de reprojeção individuais altos (ex: devido a OIS/tremores do celular)
+    filtered_obj_points = []
+    filtered_img_points = []
+    
+    for i in range(len(obj_points)):
+        img_pts_proj, _ = cv2.projectPoints(
+            obj_points[i], rvecs_init[i], tvecs_init[i], camera_matrix_init, dist_coefs_init
+        )
+        img_pts_proj = img_pts_proj.reshape(-1, 2)
+        img_pts_actual = img_points[i].reshape(-1, 2)
+        err = np.linalg.norm(img_pts_actual - img_pts_proj, axis=1)
+        rms_img = np.sqrt(np.mean(err**2))
+        
+        if rms_img < 2.0:
+            filtered_obj_points.append(obj_points[i])
+            filtered_img_points.append(img_points[i])
+            logger.info(f"  [MANTER] Imagem {i+1}: RMS={rms_img:.4f} px")
+        else:
+            logger.warning(f"  [DESCARTAR] Imagem {i+1}: RMS={rms_img:.4f} px (alto erro)")
+
+    # Se tivermos imagens suficientes após o filtro, calibrar novamente
+    if len(filtered_obj_points) >= config.MIN_CALIBRATION_IMAGES:
+        logger.info(f"Refinando calibração com {len(filtered_obj_points)} imagens selecionadas...")
+        rms, camera_matrix, dist_coefs, rvecs, tvecs = cv2.calibrateCamera(
+            filtered_obj_points, filtered_img_points, image_size, None, None, flags=calib_flags
+        )
+    else:
+        logger.warning("Imagens selecionadas insuficientes para refinamento. Usando todas as imagens.")
+        rms, camera_matrix, dist_coefs, rvecs, tvecs = rms_init, camera_matrix_init, dist_coefs_init, rvecs_init, tvecs_init
 
     logger.info(f"\n{'='*60}")
     logger.info(f"RESULTADO DA CALIBRAÇÃO")

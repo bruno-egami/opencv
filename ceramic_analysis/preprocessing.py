@@ -173,11 +173,41 @@ def equalize_histogram(img_color: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
 
 
+def normalize_brightness(
+    bg_img: np.ndarray,
+    target_img: np.ndarray,
+    border_pixels: int = 200
+) -> np.ndarray:
+    """
+    Escala os canais RGB do background para equiparar o brilho
+    à imagem alvo nas bordas (ignorando o centro onde a peça está).
+    Isso ajuda muito na subtração de fundo quando a auto-exposição varia.
+    """
+    h, w = bg_img.shape[:2]
+    # Cria máscara para as bordas
+    mask = np.zeros((h, w), dtype=np.uint8)
+    mask[:border_pixels, :] = 255
+    mask[-border_pixels:, :] = 255
+    mask[:, :border_pixels] = 255
+    mask[:, -border_pixels:] = 255
+
+    bg_mean = cv2.mean(bg_img, mask=mask)[:3]
+    target_mean = cv2.mean(target_img, mask=mask)[:3]
+
+    bg_normalized = bg_img.astype(np.float32)
+    for ch in range(3):
+        if bg_mean[ch] > 0:
+            bg_normalized[:, :, ch] *= target_mean[ch] / bg_mean[ch]
+
+    return np.clip(bg_normalized, 0, 255).astype(np.uint8)
+
+
 def preprocess(
     image_path: str,
     calibration_yaml: str = None,
     save_undistorted: bool = True,
-    output_dir: str = None
+    output_dir: str = None,
+    equalize: bool = True
 ) -> tuple:
     """
     Pipeline completo de pré-processamento de uma imagem.
@@ -197,6 +227,8 @@ def preprocess(
         save_undistorted: Se True, salva a imagem corrigida.
         output_dir: Diretório para salvar imagem corrigida.
                     Default: config.UNDISTORTED_DIR
+        equalize: Se True (default), equaliza o histograma do canal Y.
+                  Desativar se precisar de precisão colorimétrica (ex: LAB, HSV).
 
     Returns:
         Tupla (gray_blurred, img_color):
@@ -210,7 +242,9 @@ def preprocess(
     logger.info(f"Pré-processando: {image_path.name}")
 
     # 1. Carregar imagem
-    img = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+    ext = Path(image_path).suffix.lower()
+    flags = cv2.IMREAD_UNCHANGED if ext in [".tiff", ".tif"] else cv2.IMREAD_COLOR
+    img = cv2.imread(str(image_path), flags)
     if img is None:
         raise FileNotFoundError(f"Falha ao carregar imagem: {image_path}")
 
@@ -234,9 +268,13 @@ def preprocess(
     gray_for_check = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     check_centering(gray_for_check, image_path.name)
 
-    # 5. Equalizar histograma no canal Y (luminância)
-    img_equalized = equalize_histogram(img)
-    logger.debug("  ✓ Histograma equalizado (canal Y)")
+    # 5. Equalizar histograma no canal Y (luminância) (se solicitado)
+    if equalize:
+        img_equalized = equalize_histogram(img)
+        logger.debug("  ✓ Histograma equalizado (canal Y)")
+    else:
+        img_equalized = img.copy()
+        logger.debug("  - Equalização de histograma ignorada")
 
     # 6. Converter para escala de cinza e aplicar filtro gaussiano
     gray = cv2.cvtColor(img_equalized, cv2.COLOR_BGR2GRAY)
@@ -256,4 +294,4 @@ def preprocess(
         cv2.imwrite(str(out_path), img)
         logger.debug(f"  Salva em: {out_path}")
 
-    return gray_blurred, img_equalized
+    return gray_blurred, img

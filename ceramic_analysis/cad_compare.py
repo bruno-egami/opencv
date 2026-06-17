@@ -795,21 +795,28 @@ def generate_deviation_map(
     overlay = annotated.copy()
     h_img, w_img = annotated.shape[:2]
     
-    text_w = 360
-    text_h = 240 if metrics else 100
+    # Escala da fonte dinâmica baseada na resolução da imagem
+    font_scale = max(0.5, min(w_img, h_img) / 1800.0)
+    thickness = max(1, int(font_scale * 2))
+    
+    text_w = int(620 * font_scale)
+    text_h = int((380 if metrics else 160) * font_scale)
+    
+    x_start = int(25 * font_scale)
+    y_start = int(25 * font_scale)
+    
     # Retângulo de fundo para o texto
-    cv2.rectangle(overlay, (10, 10), (10 + text_w, 10 + text_h), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (x_start, y_start), (x_start + text_w, y_start + text_h), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.65, annotated, 0.35, 0, annotated)
     
-    y_offset = 30
+    y_offset = y_start + int(35 * font_scale)
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.5
     color_white = (255, 255, 255)
     
     def put_text(text, color=color_white):
         nonlocal y_offset
-        cv2.putText(annotated, text, (20, y_offset), font, font_scale, color, 1, cv2.LINE_AA)
-        y_offset += 20
+        cv2.putText(annotated, text, (x_start + int(15 * font_scale), y_offset), font, font_scale, color, thickness, cv2.LINE_AA)
+        y_offset += int(28 * font_scale)
         
     put_text("COMPARAÇÃO COM MODELO CAD", (0, 255, 255))
     put_text(f"Tolerancia Limite: {tolerance_mm:.2f} mm")
@@ -833,14 +840,16 @@ def generate_deviation_map(
             put_text(f"Furos (Foto/CAD): {metrics['n_holes_photo']}/{metrics['n_holes_cad']} (IoU: {metrics.get('holes_iou', 0.0):.3f})")
             
     # 2. Desenha o contorno da foto em Ciano (sólido)
-    cv2.polylines(annotated, [photo_contour_px.astype(np.int32)], isClosed=True, color=(255, 255, 0), thickness=2)
+    contour_thickness = max(1, int(3 * font_scale))
+    cv2.polylines(annotated, [photo_contour_px.astype(np.int32)], isClosed=True, color=(255, 255, 0), thickness=contour_thickness)
     
     # 3. Desenha os furos do CAD (se houverem) em Cinza tracejado/sólido
     if cad_holes_px:
         for hole in cad_holes_px:
-            cv2.polylines(annotated, [hole.astype(np.int32)], isClosed=True, color=(128, 128, 128), thickness=1)
+            cv2.polylines(annotated, [hole.astype(np.int32)], isClosed=True, color=(128, 128, 128), thickness=max(1, contour_thickness - 1))
             
     # 4. Desenha os pontos do contorno CAD como esferas coloridas baseadas no desvio local
+    circle_radius = max(2, int(4 * font_scale))
     for i, p in enumerate(cad_contour_px):
         d = per_point_distances_mm[i]
         
@@ -852,20 +861,26 @@ def generate_deviation_map(
         else:
             color = (0, 0, 255)      # Vermelho (fora da tolerância permitida)
             
-        cv2.circle(annotated, (int(round(p[0])), int(round(p[1]))), 3, color, -1, cv2.LINE_AA)
+        cv2.circle(annotated, (int(round(p[0])), int(round(p[1]))), circle_radius, color, -1, cv2.LINE_AA)
         
     # 5. Desenha a barra escala de cores de desvio no canto inferior esquerdo
-    scale_y = h_img - 80
-    cv2.rectangle(annotated, (10, scale_y), (30, scale_y + 15), (0, 255, 0), -1)
-    cv2.putText(annotated, f"< {tolerance_mm * 0.5:.2f} mm (Ideal)", (40, scale_y + 12), font, 0.45, color_white, 1, cv2.LINE_AA)
+    scale_y = h_img - int(120 * font_scale)
+    bar_w = int(40 * font_scale)
+    bar_h = int(25 * font_scale)
     
-    scale_y += 20
-    cv2.rectangle(annotated, (10, scale_y), (30, scale_y + 15), (0, 255, 255), -1)
-    cv2.putText(annotated, f"{tolerance_mm * 0.5:.2f} - {tolerance_mm:.2f} mm (Alerta)", (40, scale_y + 12), font, 0.45, color_white, 1, cv2.LINE_AA)
-    
-    scale_y += 20
-    cv2.rectangle(annotated, (10, scale_y), (30, scale_y + 15), (0, 0, 255), -1)
-    cv2.putText(annotated, f"> {tolerance_mm:.2f} mm (Critico)", (40, scale_y + 12), font, 0.45, color_white, 1, cv2.LINE_AA)
+    def draw_scale_item(color, label_text):
+        nonlocal scale_y
+        cv2.rectangle(annotated, (x_start, scale_y), (x_start + bar_w, scale_y + bar_h), color, -1)
+        cv2.putText(
+            annotated, label_text, 
+            (x_start + bar_w + int(15 * font_scale), scale_y + bar_h - int(5 * font_scale)), 
+            font, font_scale * 0.9, color_white, max(1, thickness - 1), cv2.LINE_AA
+        )
+        scale_y += bar_h + int(10 * font_scale)
+        
+    draw_scale_item((0, 255, 0), f"< {tolerance_mm * 0.5:.2f} mm (Ideal)")
+    draw_scale_item((0, 255, 255), f"{tolerance_mm * 0.5:.2f} - {tolerance_mm:.2f} mm (Alerta)")
+    draw_scale_item((0, 0, 255), f"> {tolerance_mm:.2f} mm (Critico)")
     
     # Salva a imagem
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

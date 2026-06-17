@@ -32,31 +32,13 @@ env/
 
 # ══════════════════════════════════════════════════════════════
 # Dados de imagem (grandes, não versionados)
-# Os arquivos RAW (.NEF) e TIFF podem ter centenas de MB
 # ══════════════════════════════════════════════════════════════
-data/calibration/raw/*.NEF
-data/calibration/raw/*.nef
-data/calibration/converted/*.tiff
-data/calibration/converted/*.tif
-
-data/sessions/*/raw/**/*.NEF
-data/sessions/*/raw/**/*.nef
-data/sessions/*/background/**/*.NEF
-data/sessions/*/background/**/*.nef
-data/sessions/*/converted/**/*.tiff
-data/sessions/*/converted/**/*.tif
-
-# Imagens processadas (regeneráveis pelo pipeline)
-data/undistorted/
-data/masks/
+data/
 
 # ══════════════════════════════════════════════════════════════
 # Saídas do pipeline (regeneráveis)
 # ══════════════════════════════════════════════════════════════
-output/annotated/
-output/calibration_debug/
-output/*.csv
-
+output/*
 # Manter o arquivo de calibração (pequeno e importante)
 !output/calibration_params.yaml
 

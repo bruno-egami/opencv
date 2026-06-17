@@ -18,7 +18,7 @@ OUTPUT_BPS = 16              # Bits por canal no TIFF de saída (16 = máxima di
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECKERBOARD (calibração de distorção da lente — executar 1× por lente)
 # ══════════════════════════════════════════════════════════════════════════════
-CHECKERBOARD_SIZE = (9, 6)   # (colunas, linhas) de cantos internos
+CHECKERBOARD_SIZE = (14, 10)  # (colunas, linhas) de cantos internos
 SQUARE_SIZE_MM = 20.0        # Tamanho real de cada quadrado em mm
 MIN_CALIBRATION_IMAGES = 3   # Mínimo de imagens com checkerboard detectado
 
@@ -68,7 +68,7 @@ CENTER_TOLERANCE = 0.30      # Fração da imagem considerada "zona central" (30
 #                       Funciona bem para alto contraste (ex: caulim branco sobre MDF)
 #   "adaptive"       → Threshold adaptativo (blocos locais)
 #                       Útil quando iluminação não é uniforme na bancada
-#   "auto"           → Tenta na ordem: background_sub → lab → otsu
+#   "auto"           → Tenta na ordem: background_sub → lab_b → lab → otsu
 #                       Avalia qualidade da máscara em cada passo
 SEGMENTATION_STRATEGY = "auto"
 
@@ -77,6 +77,14 @@ SEGMENTATION_STRATEGY = "auto"
 # ↑ Aumentar (ex: 35-50) se o fundo ruidoso gera falsos positivos
 # ↓ Diminuir (ex: 15-20) se partes da peça são cortadas na máscara
 BG_SUB_THRESHOLD = 25
+
+# Normalizar brilho entre a foto com peça e a base vazia antes de subtrair
+BG_SUB_NORMALIZE_BRIGHTNESS = True
+
+# ── Segmentação LAB Canal B (peças amarelas/creme) ──
+# Fator multiplicador do desvio padrão para o threshold do canal B.
+# Valores menores capturam mais bordas; maiores são mais restritivos.
+LAB_B_SIGMA_FACTOR = 2.0
 
 # ── Threshold adaptativo ──
 # Usado quando SEGMENTATION_STRATEGY = "adaptive"
@@ -151,4 +159,23 @@ CAD_RESAMPLE_AUTO_ADJUST = True    # Auto-ajustar pela complexidade
 # ── Caminhos ──
 CAD_DIR = os.path.join(PROJECT_ROOT, "data", "cad")
 CAD_COMPARISON_DIR = os.path.join(OUTPUT_DIR, "cad_comparison")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AJUSTE MANUAL INTERATIVO
+# ══════════════════════════════════════════════════════════════════════════════
+INTERACTIVE_WINDOW_WIDTH = 1200     # Largura da janela de ajuste (px)
+INTERACTIVE_VERTEX_RADIUS = 8       # Raio dos círculos dos vértices (px)
+INTERACTIVE_SNAP_DISTANCE = 15      # Distância máxima para "grudar" em um vértice (px)
+INTERACTIVE_CALIBRATION = True      # Ativar calibração interativa de grade/MDF
+
+# ── Fatores de correção de escala (ajuste fino) ──
+# Útil para compensar pequenas distorções ópticas ou alongamentos no centro
+# causados pela lente ou pelo software de pós-processamento de celulares.
+# Valores maiores que 1.0 aumentam o px_per_mm (resultando em mm medidos menores).
+SCALE_CORRECTION_FACTOR_H = 1.0381     # Ajuste fino horizontal (para calibrar de ~53.0 a 51.0 mm)
+SCALE_CORRECTION_FACTOR_V = 1.0330     # Ajuste fino vertical (para calibrar de ~39.2 a 38.0 mm)
+
+
+
 

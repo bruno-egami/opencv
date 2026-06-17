@@ -28,13 +28,13 @@ O subprojeto contido no diretório `ceramic_analysis/` foi desenvolvido para com
 - 🔧 **Calibração de câmera** — Checkerboard 9×6 com `cv2.calibrateCamera`
 - 🔍 **Pré-processamento** — Correção de distorção, equalização de histograma, filtro gaussiano
 - 🎯 **Segmentação multi-estratégia** — Subtração de fundo, LAB color space, Otsu, adaptativo (com detecção de inversão para materiais claros/escuros)
-- 📏 **Metrologia dual-axis** — Grade gravada a laser no MDF → `px_per_mm` independente em X e Y
+- 📏 **Metrologia dual-axis** — Grade gravada a laser no MDF → `px_per_mm` independente em X e Y com suporte a fatores de correção multiplicativos (`SCALE_CORRECTION_FACTOR_H/V`) para neutralizar distorções/alongamentos ópticos centrais de lentes de celulares.
 - 📐 **Correção de paralaxe** — Retificação física para vistas laterais com grade posicionada atrás da peça
 - 🧊 **Dimensões 3D** — Combinação de vistas de cima (X-Y) e lateral (X-Z)
 - 🖥️ **Comparação CAD (STL/STEP)** — Suporte nativo a STEP do **Autodesk Inventor** via CadQuery, orientação automática por PCA com fallback para OBB, registro ICP (com suporte a simetria de rotação/translação) e extração de furos/cavidades.
 - 🎨 **Mapa de Desvio Visual** — Mapa de calor sobreposto na peça indicando desvios críticos (Vermelho), toleráveis (Amarelo) e ideais (Verde), legenda completa de metrologia.
 - 📊 **Exportação CSV** — Medições, retração percentual, desvios CAD e metadados de escala
-- 🖼️ **Imagens anotadas** — Contornos e dimensões sobrepostos para validação visual
+- 🖼️ **Imagens anotadas** — Contornos e dimensões sobrepostos para validação visual (com filtro inteligente de contorno principal)
 - ✅ **Validação ImageJ** — Máscaras binárias salvas em PNG para inspeção independente
 
 ### Estrutura da pasta `ceramic_analysis/`
@@ -42,18 +42,18 @@ O subprojeto contido no diretório `ceramic_analysis/` foi desenvolvido para com
 ```
 ceramic_analysis/
 ├── pipeline.py               # CLI principal (ponto de entrada)
-├── config.py                 # Parâmetros ajustáveis (e limite de desvios CAD)
-├── cad_compare.py            # NOVO: Módulo de comparação com modelos CAD (STL/STEP)
+├── config.py                 # Parâmetros ajustáveis (limite de desvios CAD e fatores de ajuste de escala)
+├── cad_compare.py            # Módulo de comparação com modelos CAD (STL/STEP)
 ├── raw_converter.py          # .NEF → TIFF 16-bit
-├── calibrate.py              # Calibração de lente (checkerboard)
+├── calibrate.py              # Calibração de lente (checkerboard com ajuste fino de grade)
 ├── preprocessing.py          # Undistort, equalização, filtro
 ├── segmentation.py           # Segmentação (com auto-inversão e ordenação)
-├── metrology.py              # Grade → escala px/mm + paralaxe
+├── metrology.py              # Grade → escala px/mm + paralaxe (orientada à rotação)
 ├── analysis.py               # Retração, CSV, anotações
 ├── requirements.txt          # Inclui dependências de CAD (trimesh, cadquery, shapely, scipy)
 ├── data/                     # Imagens do checkerboard, background e sessões
 └── tests/
-    └── test_pipeline.py      # 63 testes unitários
+    └── test_pipeline.py      # 64 testes unitários
 ```
 
 ### Instalação e Preparação
@@ -100,13 +100,21 @@ python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20
 python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl --view all --tolerance 1.5
 ```
 
+#### 5. Ajuste Fino de Escala (Distorção de Celulares)
+Caso a lente do celular ou o pós-processamento interno deformem as dimensões centrais da peça em relação à grade externa, ajuste as variáveis em `config.py`:
+```python
+SCALE_CORRECTION_FACTOR_H = 1.0381  # Ajuste horizontal (ex: 53.0mm -> 51.0mm)
+SCALE_CORRECTION_FACTOR_V = 1.0330  # Ajuste vertical (ex: 39.2mm -> 38.0mm)
+```
+Esses fatores ajustam o fator de escala `px_per_mm` individualmente nos eixos e corrigem as métricas de forma rotacionalmente orientada.
+
 ### Testes Unitários
 
 Para garantir a corretude do código e as novas validações matemáticas e de geometria CAD:
 ```bash
 python -m pytest tests/test_pipeline.py -v
 ```
-Todos os 63 testes unitários utilizam dados sintéticos e não exigem conexões físicas ou imagens reais.
+Todos os 64 testes unitários utilizam dados sintéticos e não exigem conexões físicas ou imagens reais.
 
 ---
 
