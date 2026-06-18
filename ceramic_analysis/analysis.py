@@ -478,8 +478,41 @@ def annotate_image(
             )
             y_offset += int(35 * font_scale) + int(10 * font_scale)
 
-        # Desenhar cotas/linhas de dimensão diretamente sobre a peça no perímetro/bounding box
-        if "bbox_x" in metrics and "bbox_y" in metrics and "bbox_w" in metrics and "bbox_h" in metrics:
+        # Desenhar cotas/linhas de dimensão diretamente sobre a peça no perímetro
+        circularity = metrics.get("circularity", 0.0)
+        
+        if circularity <= 0.80 and "min_rect_center_x" in metrics and "min_rect_w" in metrics and "min_rect_h" in metrics:
+            center_pt = (metrics["min_rect_center_x"], metrics["min_rect_center_y"])
+            w_px = metrics["min_rect_w"]
+            h_px = metrics["min_rect_h"]
+            angle = metrics["min_rect_angle"]
+            
+            # Obter os 4 vértices do min_rect
+            box = cv2.boxPoints((center_pt, (w_px, h_px), angle))
+            
+            # Fatores de escala
+            px_h = scale.get("px_per_mm_h", 1.0) if scale else 1.0
+            px_v = scale.get("px_per_mm_v", 1.0) if scale else 1.0
+            
+            # Desenhar cotas para os 4 segmentos do retângulo orientado
+            for i in range(4):
+                p1 = box[i]
+                p2 = box[(i + 1) % 4]
+                
+                # Calcular comprimento em mm deste segmento
+                dx_mm = (p2[0] - p1[0]) / px_h
+                dy_mm = (p2[1] - p1[1]) / px_v
+                len_mm = np.sqrt(dx_mm**2 + dy_mm**2)
+                
+                # Evitar cotar segmentos excessivamente pequenos (ruído ou erros)
+                if len_mm < 1.0:
+                    continue
+                    
+                _draw_segment_cota(
+                    annotated, p1, p2, center_pt, len_mm,
+                    font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness
+                )
+        elif "bbox_x" in metrics and "bbox_y" in metrics and "bbox_w" in metrics and "bbox_h" in metrics:
             x, y = metrics["bbox_x"], metrics["bbox_y"]
             bw, bh = metrics["bbox_w"], metrics["bbox_h"]
             
@@ -536,6 +569,36 @@ def annotate_image(
                     center=True
                 )
 
+            # Desenhar ângulos nos vértices
+            if "corners_px" in metrics and "corner_angles" in metrics and metrics["corners_px"]:
+                corners_px = metrics["corners_px"]
+                corner_angles = metrics["corner_angles"]
+                center_x = metrics.get("min_rect_center_x", w // 2)
+                center_y = metrics.get("min_rect_center_y", h // 2)
+                
+                for pt, angle in zip(corners_px, corner_angles):
+                    px, py = pt
+                    # Vetor do centro para o vértice para deslocar o texto para fora
+                    dx = px - center_x
+                    dy = py - center_y
+                    dist = np.sqrt(dx**2 + dy**2)
+                    if dist > 0:
+                        nx = dx / dist
+                        ny = dy / dist
+                        # Deslocar para fora da peça
+                        text_offset_px = int(35 * font_scale)
+                        tx = int(px + nx * text_offset_px)
+                        ty = int(py + ny * text_offset_px)
+                    else:
+                        tx, ty = px, py
+                        
+                    text_angle = f"{angle:.1f}°"
+                    _draw_text_with_bg(
+                        annotated, text_angle, (tx, ty),
+                        font_scale * 0.65, COLOR_ELLIPSE, COLOR_TEXT_BG, max(1, thickness - 1),
+                        center=True
+                    )
+
     # Metadados de escala no canto inferior esquerdo
     if scale:
         meta_texts = [
@@ -584,6 +647,83 @@ def _draw_text_with_bg(
     cv2.putText(img, text, (x, y), font, font_scale, color, thickness)
 
 
+def _draw_segment_cota(img, p1, p2, center_pt, len_mm, font_scale, color_cota, color_text, color_bg, thickness):
+    """
+    Desenha uma cota (linha de medição, linhas de extensão, ticks de 45° e texto)
+    paralela ao segmento de reta p1-p2, deslocada para fora da peça (afastando-se de center_pt).
+    """
+    p1 = np.array(p1, dtype=np.float64)
+    p2 = np.array(p2, dtype=np.float64)
+    center = np.array(center_pt, dtype=np.float64)
+    
+    # Vetor direção do segmento
+    v = p2 - p1
+    dist_px = np.linalg.norm(v)
+    if dist_px < 1e-3:
+        return
+        
+    u = v / dist_px
+    # Vetor normal
+    n = np.array([-u[1], u[0]])
+    
+    # Direção de afastamento do centro
+    mid = (p1 + p2) / 2.0
+    v_c = mid - center
+    if np.dot(v_c, n) < 0:
+        n = -n
+        
+    # Offset da linha de cota
+    offset_px = int(45 * font_scale)
+    tick_size = int(6 * font_scale)
+    
+    p1_cota = p1 + n * offset_px
+    p2_cota = p2 + n * offset_px
+    
+    p1_cota_i = (int(round(p1_cota[0])), int(round(p1_cota[1])))
+    p2_cota_i = (int(round(p2_cota[0])), int(round(p2_cota[1])))
+    p1_i = (int(round(p1[0])), int(round(p1[1])))
+    p2_i = (int(round(p2[0])), int(round(p2[1])))
+    
+    # Linhas de extensão
+    ext_p1 = p1 + n * (offset_px + int(5 * font_scale))
+    ext_p2 = p2 + n * (offset_px + int(5 * font_scale))
+    
+    ext_p1_i = (int(round(ext_p1[0])), int(round(ext_p1[1])))
+    ext_p2_i = (int(round(ext_p2[0])), int(round(ext_p2[1])))
+    
+    # Desenhar linhas de extensão
+    cv2.line(img, p1_i, ext_p1_i, color_cota, 1, cv2.LINE_AA)
+    cv2.line(img, p2_i, ext_p2_i, color_cota, 1, cv2.LINE_AA)
+    
+    # Desenhar linha de cota principal
+    cv2.line(img, p1_cota_i, p2_cota_i, color_cota, 1, cv2.LINE_AA)
+    
+    # Ticks arquitetônicos (traço a 45 graus)
+    t1 = u + n
+    t1_norm = np.linalg.norm(t1)
+    if t1_norm > 1e-3:
+        t1 = t1 / t1_norm
+    
+    t1_p1 = p1_cota + t1 * tick_size
+    t1_p2 = p1_cota - t1 * tick_size
+    cv2.line(img, (int(round(t1_p1[0])), int(round(t1_p1[1]))), (int(round(t1_p2[0])), int(round(t1_p2[1]))), color_cota, 2, cv2.LINE_AA)
+    
+    t2_p1 = p2_cota + t1 * tick_size
+    t2_p2 = p2_cota - t1 * tick_size
+    cv2.line(img, (int(round(t2_p1[0])), int(round(t2_p1[1]))), (int(round(t2_p2[0])), int(round(t2_p2[1]))), color_cota, 2, cv2.LINE_AA)
+    
+    # Texto da cota
+    text = f"{len_mm:.2f} mm"
+    text_pos = mid + n * (offset_px + int(12 * font_scale))
+    text_pos_i = (int(round(text_pos[0])), int(round(text_pos[1])))
+    
+    _draw_text_with_bg(
+        img, text, text_pos_i,
+        font_scale * 0.7, color_text, color_bg, max(1, thickness - 1),
+        center=True
+    )
+
+
 def annotate_batch(
     image_paths: list,
     metrics_list: list,
@@ -612,7 +752,7 @@ def annotate_batch(
         output_path = output_dir / f"{img_path.stem}_annotated.png"
 
         # Determinar se deve desenhar elipse (peça circular)
-        draw_ellipse = metrics.get("circularity", 0) > 0.7
+        draw_ellipse = metrics.get("circularity", 0) > 0.80
 
         annotate_image(
             img, metrics, str(output_path),

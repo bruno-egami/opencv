@@ -340,8 +340,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
                         Dimensões da Peça
                     </div>
-                    <div class="card-value">{dim_top_len:.1f} × {dim_top_width:.1f} mm</div>
-                    <div class="card-sub">Espessura (Vista Lateral): {thickness:.1f} mm</div>
+                    <div class="card-value">{dim_top_len:.2f} × {dim_top_width:.2f} mm</div>
+                    <div class="card-sub">Espessura (Vista Lateral): {thickness:.2f} mm</div>
                 </div>
 
                 <div class="card">
@@ -428,37 +428,38 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Comprimento da Peça (Maior)</td>
                             <td>{dim_top_len:.2f} mm</td>
-                            <td>56.10 mm</td>
+                            <td>{nominal_len:.2f} mm</td>
                             <td><strong style="color: {dev_len_color};">{dev_len:+.2f} mm</strong> ({dev_len_pct:+.1f}%)</td>
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Largura da Peça (Menor)</td>
                             <td>{dim_top_width:.2f} mm</td>
-                            <td>38.00 mm</td>
+                            <td>{nominal_width:.2f} mm</td>
                             <td><strong style="color: {dev_width_color};">{dev_width:+.2f} mm</strong> ({dev_width_pct:+.1f}%)</td>
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Área Projetada</td>
-                            <td>{area_top:.1f} mm²</td>
-                            <td>2131.8 mm²</td>
-                            <td>{dev_area_pct:+.1f}%</td>
+                            <td>{area_top:.2f} mm²</td>
+                            <td>{nominal_area:.2f} mm²</td>
+                            <td>{dev_area_pct:+.2f}%</td>
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
                             <td>Espessura (Altura)</td>
                             <td>{thickness:.2f} mm</td>
-                            <td>9.00 mm</td>
+                            <td>{nominal_thick:.2f} mm</td>
                             <td><strong style="color: {dev_thick_color};">{dev_thick:+.2f} mm</strong> ({dev_thick_pct:+.1f}%)</td>
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
                             <td>Largura (Perfil)</td>
                             <td>{dim_side_w:.2f} mm</td>
-                            <td>38.00 mm</td>
+                            <td>{nominal_side_w:.2f} mm</td>
                             <td>{dev_side_w:+.2f} mm</td>
                         </tr>
+                        {angle_rows_html}
                     </tbody>
                 </table>
             </div>
@@ -557,8 +558,39 @@ def generate_report(session_id: str):
     iou = float(top_cad.get("iou", 0.0)) if top_cad else 0.0
     mean_dev = float(top_cad.get("mean_deviation_mm", 0.0)) if top_cad else 0.0
 
-    # Ordenar dimensões para que o maior valor medido seja comparado ao comprimento nominal (56.10 mm)
-    # e o menor valor medido seja comparado à largura nominal (38.00 mm).
+    # Valores padrão para nominal (se não houver comparação CAD)
+    nominal_len = 56.10
+    nominal_width = 38.00
+    nominal_thick = 0.00
+    nominal_area = 2131.8
+    nominal_side_w = 38.00
+
+    if top_cad:
+        cad_w = float(top_cad.get("cad_bbox_w_mm", 0.0))
+        cad_h = float(top_cad.get("cad_bbox_h_mm", 0.0))
+        if cad_w > 0 and cad_h > 0:
+            nominal_len = max(cad_w, cad_h)
+            nominal_width = min(cad_w, cad_h)
+            nominal_area = float(top_cad.get("cad_area_mm2", nominal_area))
+            nominal_side_w = nominal_width
+        
+        # Tentar extrair espessura nominal do cad_extents_mm (formato WxHxD)
+        extents_str = top_cad.get("cad_extents_mm")
+        if extents_str:
+            try:
+                parts = extents_str.replace("×", "x").split("x")
+                if len(parts) == 3:
+                    nominal_thick = float(parts[2])
+            except Exception as e:
+                logger.warning(f"Erro ao parsear cad_extents_mm: {e}")
+
+    if front_cad:
+        cad_thick = float(front_cad.get("cad_bbox_h_mm", 0.0))
+        if cad_thick > 0:
+            nominal_thick = cad_thick
+
+    # Ordenar dimensões para que o maior valor medido seja comparado ao comprimento nominal
+    # e o menor valor medido seja comparado à largura nominal.
     if dim_top_w > 0 or dim_top_h > 0:
         measured_dims = sorted([dim_top_w, dim_top_h], reverse=True)
         dim_top_len = measured_dims[0]
@@ -568,17 +600,55 @@ def generate_report(session_id: str):
         dim_top_width = 0.0
 
     # Devs
-    # Compare com nominal: 56.1 x 38 x 9
-    dev_len = dim_top_len - 56.10 if dim_top_len > 0 else 0.0
-    dev_len_pct = (dev_len / 56.10) * 100 if dim_top_len > 0 else 0.0
-    dev_width = dim_top_width - 38.00 if dim_top_width > 0 else 0.0
-    dev_width_pct = (dev_width / 38.00) * 100 if dim_top_width > 0 else 0.0
+    dev_len = dim_top_len - nominal_len if dim_top_len > 0 else 0.0
+    dev_len_pct = (dev_len / nominal_len) * 100 if dim_top_len > 0 and nominal_len > 0 else 0.0
+    dev_width = dim_top_width - nominal_width if dim_top_width > 0 else 0.0
+    dev_width_pct = (dev_width / nominal_width) * 100 if dim_top_width > 0 and nominal_width > 0 else 0.0
     
-    dev_thick = thickness - 9.00 if thickness > 0 else 0.0
-    dev_thick_pct = (dev_thick / 9.00) * 100 if thickness > 0 else 0.0
-    dev_area_pct = ((area_top - 2131.8) / 2131.8) * 100 if area_top > 0 else 0.0
+    dev_thick = thickness - nominal_thick if thickness > 0 else 0.0
+    dev_thick_pct = (dev_thick / nominal_thick) * 100 if thickness > 0 and nominal_thick > 0 else 0.0
+    dev_area_pct = ((area_top - nominal_area) / nominal_area) * 100 if area_top > 0 and nominal_area > 0 else 0.0
     
-    dev_side_w = dim_side_w - 38.00 if dim_side_w > 0 else 0.0
+    dev_side_w = dim_side_w - nominal_side_w if dim_side_w > 0 else 0.0
+
+    # Ângulos internos dos vértices (se disponíveis)
+    angle_0 = float(top_meas.get("corner_angle_0", 0.0)) if top_meas else 0.0
+    angle_1 = float(top_meas.get("corner_angle_1", 0.0)) if top_meas else 0.0
+    angle_2 = float(top_meas.get("corner_angle_2", 0.0)) if top_meas else 0.0
+    angle_3 = float(top_meas.get("corner_angle_3", 0.0)) if top_meas else 0.0
+
+    angle_rows_html = ""
+    if angle_0 > 0:
+        angle_rows_html = f"""
+                        <tr>
+                            <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
+                            <td>Ângulo Vértice 1 (Sup-Esq)</td>
+                            <td>{angle_0:.2f}°</td>
+                            <td>90.00°</td>
+                            <td>{angle_0 - 90.00:+.2f}°</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
+                            <td>Ângulo Vértice 2 (Sup-Dir)</td>
+                            <td>{angle_1:.2f}°</td>
+                            <td>90.00°</td>
+                            <td>{angle_1 - 90.00:+.2f}°</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
+                            <td>Ângulo Vértice 3 (Inf-Dir)</td>
+                            <td>{angle_2:.2f}°</td>
+                            <td>90.00°</td>
+                            <td>{angle_2 - 90.00:+.2f}°</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
+                            <td>Ângulo Vértice 4 (Inf-Esq)</td>
+                            <td>{angle_3:.2f}°</td>
+                            <td>90.00°</td>
+                            <td>{angle_3 - 90.00:+.2f}°</td>
+                        </tr>
+        """
 
     def get_color(val):
         return "#10b981" if abs(val) < 1.5 else "#ef4444"
@@ -627,7 +697,13 @@ def generate_report(session_id: str):
         annotated_top=annotated_top,
         annotated_side=annotated_side,
         deviation_top=deviation_top,
-        deviation_side=deviation_side
+        deviation_side=deviation_side,
+        nominal_len=nominal_len,
+        nominal_width=nominal_width,
+        nominal_area=nominal_area,
+        nominal_thick=nominal_thick,
+        nominal_side_w=nominal_side_w,
+        angle_rows_html=angle_rows_html
     )
 
     output_session_dir = Path(config.OUTPUT_DIR) / session_id

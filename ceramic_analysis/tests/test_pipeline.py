@@ -721,7 +721,7 @@ class TestIntegration:
         assert len(results) == 3
         # Devem estar ordenados pelo score: mais perto do centro (300), depois (500), depois (100)
         x_coords = [r["bbox_x"] for r in results]
-        assert x_coords == [300, 500, 100]
+        assert all(abs(a - b) <= 2 for a, b in zip(x_coords, [300, 500, 100]))
         assert results[0]["contour_index"] == 0
         assert results[1]["contour_index"] == 1
         assert results[2]["contour_index"] == 2

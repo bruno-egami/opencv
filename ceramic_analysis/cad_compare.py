@@ -497,6 +497,31 @@ def apply_registration(points_mm: np.ndarray, transform: dict) -> np.ndarray:
         # centroid ou bbox_center (apenas translação direta)
         return points_mm + transform["translation_mm"]
 
+def invert_registration(points_mm: np.ndarray, transform: dict) -> np.ndarray:
+    """
+    Aplica a transformação inversa do registro a um conjunto de pontos.
+    Mapeia os pontos da foto (espaço da imagem) de volta para o espaço canônico do CAD.
+    
+    Args:
+        points_mm: Array de pontos (Nx2)
+        transform: Dicionário contendo os dados do registro (rotação e translação)
+        
+    Returns:
+        Pontos projetados de volta no plano canônico (Nx2)
+    """
+    method = transform.get("method_used", "")
+    
+    if "icp" in method:
+        rot_deg = transform["rotation_deg"]
+        rad = np.radians(rot_deg)
+        cos_a, sin_a = np.cos(rad), np.sin(rad)
+        R = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+        t = transform["translation_mm"]
+        return np.dot(points_mm - t, R)
+    else:
+        # centroid ou bbox_center (apenas translação direta reversa)
+        return points_mm - transform["translation_mm"]
+
 def register_contours(
     cad_contour_mm: np.ndarray,
     photo_contour_mm: np.ndarray,
@@ -629,7 +654,8 @@ def compare_contours(
     cad_bbox: dict,
     cad_holes: list = None,
     photo_holes: list = None,
-    shape_class: str = "prismatic"
+    shape_class: str = "prismatic",
+    transform: dict = None
 ) -> dict:
     """
     Calcula desvios dimensionais e métricas de fidelidade geométrica (Hausdorff, IoU, desvios).
@@ -671,7 +697,12 @@ def compare_contours(
     iou = inter / union if union > 0 else 0.0
     
     # 4. Desvios de Bounding Box e Área
-    min_pho, max_pho = np.min(photo_contour_mm, axis=0), np.max(photo_contour_mm, axis=0)
+    if transform is not None:
+        photo_contour_canonical = invert_registration(photo_contour_mm, transform)
+    else:
+        photo_contour_canonical = photo_contour_mm
+
+    min_pho, max_pho = np.min(photo_contour_canonical, axis=0), np.max(photo_contour_canonical, axis=0)
     photo_w = max_pho[0] - min_pho[0]
     photo_h = max_pho[1] - min_pho[1]
     photo_area = photo_poly.area

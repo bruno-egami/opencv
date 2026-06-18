@@ -280,7 +280,9 @@ def evaluate_mask_quality(mask: np.ndarray) -> dict:
             perimeter = cv2.arcLength(c, True)
             circularity = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
             if circularity >= 0.05 and aspect_ratio <= 5.0:
-                valid_contours.append(c)
+                # Rejeitar contornos que cobrem a maior parte de ambas as dimensoes da imagem (MDF de fundo)
+                if w < 0.8 * mask.shape[1] or h < 0.8 * mask.shape[0]:
+                    valid_contours.append(c)
 
     # Calcular compacidade do maior contorno
     compactness = 0.0
@@ -387,6 +389,59 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
         except cv2.error:
             logger.debug("  Não foi possível ajustar elipse ao contorno")
 
+    # Vértices e ângulos internos (se for retangular)
+    corner_angle_0 = 0.0
+    corner_angle_1 = 0.0
+    corner_angle_2 = 0.0
+    corner_angle_3 = 0.0
+    corners_px = []
+    corner_angles = []
+
+    if circularity <= 0.80:
+        try:
+            # 1. Obter os 4 cantos do min_rect
+            box = cv2.boxPoints(min_rect)
+            cx, cy = min_rect_center
+            # Ordenar anti-horário
+            box_angles = np.arctan2(box[:, 1] - cy, box[:, 0] - cx)
+            sort_idx = np.argsort(box_angles)
+            box_sorted = box[sort_idx]
+            
+            # 2. Projetar no contorno para achar vértices físicos
+            for pt in box_sorted:
+                dists = np.linalg.norm(contour[:, 0] - pt, axis=1)
+                idx = np.argmin(dists)
+                corners_px.append(contour[idx, 0])
+                
+            # 3. Calcular os ângulos internos
+            n = len(corners_px)
+            for i in range(n):
+                pt_curr = corners_px[i]
+                pt_prev = corners_px[(i - 1) % n]
+                pt_next = corners_px[(i + 1) % n]
+                
+                u = pt_prev - pt_curr
+                v = pt_next - pt_curr
+                
+                dot_prod = np.dot(u, v)
+                norm_u = np.linalg.norm(u)
+                norm_v = np.linalg.norm(v)
+                
+                if norm_u > 0 and norm_v > 0:
+                    cos_theta = np.clip(dot_prod / (norm_u * norm_v), -1.0, 1.0)
+                    angle = np.degrees(np.arccos(cos_theta))
+                    corner_angles.append(angle)
+                else:
+                    corner_angles.append(90.0)
+            
+            if len(corner_angles) == 4:
+                corner_angle_0 = corner_angles[0]
+                corner_angle_1 = corner_angles[1]
+                corner_angle_2 = corner_angles[2]
+                corner_angle_3 = corner_angles[3]
+        except Exception as e:
+            logger.debug(f"Erro ao calcular ângulos dos vértices: {e}")
+
     metrics = {
         # Bounding box
         "bbox_x": bbox_x,
@@ -409,6 +464,13 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
         "ellipse_major_px": ellipse_major,
         "ellipse_minor_px": ellipse_minor,
         "ellipse_angle": ellipse_angle,
+        # Vértices e ângulos
+        "corners_px": [list(pt) for pt in corners_px] if corners_px else None,
+        "corner_angles": corner_angles if corner_angles else None,
+        "corner_angle_0": corner_angle_0,
+        "corner_angle_1": corner_angle_1,
+        "corner_angle_2": corner_angle_2,
+        "corner_angle_3": corner_angle_3,
         # Contorno original (para desenho e conversão)
         "contour": contour,
         "hull": hull,
@@ -458,6 +520,82 @@ def check_and_correct_inversion(mask: np.ndarray) -> np.ndarray:
     return mask
 
 
+def refine_contour_with_edges(contour, gray, margin=30, mode="close") -> tuple:
+    """
+    Refina o contorno usando bordas Canny detectadas em uma ROI ao redor dele.
+    Retorna o contorno refinado e o IoU (Intersection over Union).
+    """
+    bx, by, bw, bh = cv2.boundingRect(contour)
+    h_img, w_img = gray.shape[:2]
+    x1 = max(0, bx - margin)
+    y1 = max(0, by - margin)
+    x2 = min(w_img, bx + bw + margin)
+    y2 = min(h_img, by + bh + margin)
+    
+    roi_gray = gray[y1:y2, x1:x2]
+    
+    # Threshold Otsu para o Canny
+    high_thresh, _ = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    low_thresh = 0.5 * high_thresh
+    edges = cv2.Canny(roi_gray, low_thresh, high_thresh)
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    if mode == "raw":
+        edges_processed = edges
+    elif mode == "close":
+        edges_processed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    elif mode == "dilate_close":
+        edges_dilated = cv2.dilate(edges, kernel, iterations=1)
+        edges_processed = cv2.morphologyEx(edges_dilated, cv2.MORPH_CLOSE, kernel)
+    else:
+        edges_processed = edges
+        
+    contours_canny, _ = cv2.findContours(edges_processed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours_canny:
+        return contour, 0.0
+        
+    contour_roi = contour.copy()
+    contour_roi[:, :, 0] -= x1
+    contour_roi[:, :, 1] -= y1
+    orig_area = cv2.contourArea(contour_roi)
+    
+    best_iou = 0.0
+    best_contour = None
+    
+    h_roi, w_roi = roi_gray.shape[:2]
+    mask_orig = np.zeros((h_roi, w_roi), dtype=np.uint8)
+    cv2.drawContours(mask_orig, [contour_roi], -1, 255, -1)
+    
+    for c_canny in contours_canny:
+        # Filtrar contornos irrelevantes por área
+        if cv2.contourArea(c_canny) < 0.3 * orig_area:
+            continue
+            
+        mask_canny = np.zeros((h_roi, w_roi), dtype=np.uint8)
+        cv2.drawContours(mask_canny, [c_canny], -1, 255, -1)
+        
+        intersection = cv2.bitwise_and(mask_orig, mask_canny)
+        union = cv2.bitwise_or(mask_orig, mask_canny)
+        
+        area_intersection = np.sum(intersection > 0)
+        area_union = np.sum(union > 0)
+        
+        if area_union > 0:
+            iou = area_intersection / area_union
+            if iou > best_iou:
+                best_iou = iou
+                best_contour = c_canny
+                
+    if best_contour is not None and best_iou > 0.5:
+        refined_contour = best_contour.copy()
+        refined_contour[:, :, 0] += x1
+        refined_contour[:, :, 1] += y1
+        return refined_contour, best_iou
+    else:
+        return contour, 0.0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Função principal de segmentação
 # ──────────────────────────────────────────────────────────────────────────────
@@ -503,6 +641,7 @@ def segment(
         # Tentar cada estratégia na ordem de preferência
         strategies_to_try = []
 
+        strategies_to_try.append(("yellow", None))
         strategies_to_try.append(("lab_b", None))
         if background is not None:
             strategies_to_try.append(("background_sub", background))
@@ -571,6 +710,22 @@ def segment(
             continue
             
         valid_contours.append(c)
+
+    # Refinar contornos válidos usando as bordas Canny
+    refined_contours = []
+    for c in valid_contours:
+        c_ref, iou = refine_contour_with_edges(c, gray_blurred, margin=30, mode="close")
+        if iou > 0.5:
+            _, _, w_orig, h_orig = cv2.boundingRect(c)
+            _, _, w_ref, h_ref = cv2.boundingRect(c_ref)
+            logger.info(
+                f"    [Refinamento Canny] IoU={iou:.4f} -> BBox: {w_orig}x{h_orig} px -> {w_ref}x{h_ref} px"
+            )
+            refined_contours.append(c_ref)
+        else:
+            logger.info("    [Refinamento Canny] Falha ou IoU muito baixo. Mantendo original.")
+            refined_contours.append(c)
+    valid_contours = refined_contours
 
     # Ordenar contornos: priorizar o que tem melhor score (área × proximidade do centro)
     # Se houver apenas 1, será o primeiro de qualquer forma.

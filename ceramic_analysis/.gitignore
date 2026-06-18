@@ -38,9 +38,8 @@ data/
 # ══════════════════════════════════════════════════════════════
 # Saídas do pipeline (regeneráveis)
 # ══════════════════════════════════════════════════════════════
-output/*
-# Manter o arquivo de calibração (pequeno e importante)
-!output/calibration_params.yaml
+output/
+
 
 # ══════════════════════════════════════════════════════════════
 # Pytest
@@ -48,9 +47,16 @@ output/*
 .pytest_cache/
 tests/_tmp/
 
-# ══════════════════════════════════════════════════════════════
-# OS
-# ══════════════════════════════════════════════════════════════
 Thumbs.db
 .DS_Store
 Desktop.ini
+
+# ══════════════════════════════════════════════════════════════
+# Arquivos de rascunho (scratch) e modelos CAD temporários
+# ══════════════════════════════════════════════════════════════
+scratch/
+*.stl
+*.ipt
+*.step
+*.stp
+

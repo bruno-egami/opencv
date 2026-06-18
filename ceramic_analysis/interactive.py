@@ -199,7 +199,9 @@ class InteractiveContourEditor:
     def run(self):
         """Loop de exibição e captura de teclas."""
         cv2.namedWindow(self.window_title, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
+        cv2.waitKey(100)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
@@ -573,7 +575,9 @@ class Interactive4CornerSelector:
 
     def run(self):
         cv2.namedWindow(self.window_title, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
+        cv2.waitKey(100)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
@@ -804,7 +808,9 @@ class InteractiveCheckerboardGridEditor:
 
     def run(self):
         cv2.namedWindow(self.window_title, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
+        cv2.waitKey(100)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)

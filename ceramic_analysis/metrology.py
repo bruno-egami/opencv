@@ -53,6 +53,9 @@ def detect_calibration_block(
     if pattern_size is None:
         pattern_size = getattr(config, "CALIB_BLOCK_PATTERN_SIZE", (8, 7))
 
+    cols, rows = pattern_size
+    transposed_size = (rows, cols)
+
     logger.info(f"Detectando bloco padrão de calibração (tamanho do padrão: {pattern_size})...")
 
     # Converter para escala de cinza se colorida
@@ -61,41 +64,121 @@ def detect_calibration_block(
     else:
         gray = image.copy()
 
-    # Tentar detecção direta
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
-    ret, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags)
+    # Flags com e sem FAST_CHECK
+    flags_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
+    flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
 
-    # Se falhar, tentar sem FAST_CHECK (mais lento porém mais robusto)
-    if not ret:
-        logger.debug("Detecção direta falhou, tentando sem FAST_CHECK...")
-        flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        ret, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags_no_fast)
+    ret = False
+    corners = None
 
-    # Se ainda falhar, tentar com downscale para melhorar contraste de estruturas grandes
-    if not ret:
-        for scale in [0.5, 0.25]:
-            logger.debug(f"Detecção falhou, tentando com downscale de {scale}...")
-            w = int(gray.shape[1] * scale)
-            h = int(gray.shape[0] * scale)
-            resized = cv2.resize(gray, (w, h), interpolation=cv2.INTER_AREA)
-            ret_res, corners_res = cv2.findChessboardCorners(resized, pattern_size, flags=flags_no_fast)
-            if ret_res:
-                logger.info(f"✓ Bloco padrão detectado com downscale de {scale}")
-                # Mapear cantos de volta para resolução original
-                corners = corners_res / scale
+    # Testar diferentes resoluções (escalas) ordenadas da menor para a maior para velocidade
+    # Escalas menores (0.1, 0.15) rodam instantaneamente e filtram ruído de alta frequência
+    for scale in [0.1, 0.15, 0.25, 0.5, 1.0]:
+        if scale == 1.0:
+            gray_sc = gray
+        else:
+            gray_sc = cv2.resize(gray, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+        # Evitar erros de assert se a imagem for pequena demais
+        min_dim = max(cols, rows) * 6
+        if gray_sc.shape[1] < min_dim or gray_sc.shape[0] < min_dim:
+            continue
+
+        # 1. Tentar padrão original
+        ret_orig, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags_fast)
+        if not ret_orig:
+            ret_orig, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags_no_fast)
+
+        if ret_orig:
+            logger.info(f"[OK] Bloco padrao detectado com escala {scale}")
+            corners = corners_sc / scale if scale != 1.0 else corners_sc
+            ret = True
+            break
+
+        # 2. Tentar padrão transposto (rotacionado)
+        if transposed_size != pattern_size:
+            ret_trans, corners_sc = cv2.findChessboardCorners(gray_sc, transposed_size, flags=flags_fast)
+            if not ret_trans:
+                ret_trans, corners_sc = cv2.findChessboardCorners(gray_sc, transposed_size, flags=flags_no_fast)
+
+            if ret_trans:
+                logger.info(f"[OK] Bloco padrao (rotacionado) detectado com escala {scale}")
+                # Transpor os cantos detectados para a orientação padrão (cols * rows, 1, 2)
+                c_grid = corners_sc.reshape(cols, rows, 2)
+                c_transposed = c_grid.transpose(1, 0, 2)
+                corners_orig_sc = c_transposed.reshape(-1, 1, 2)
+
+                corners = corners_orig_sc / scale if scale != 1.0 else corners_orig_sc
                 ret = True
                 break
+
+    # --- INÍCIO DO AJUSTE MANUAL INTERATIVO ---
+    import sys
+    is_testing = "pytest" in sys.modules
+    use_interactive = getattr(config, "INTERACTIVE_CALIBRATION", False) and not is_testing
+
+    if use_interactive:
+        import interactive
+        if len(image.shape) == 2:
+            img_color = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        else:
+            img_color = image.copy()
+
+        initial_points = None
+        if ret and corners is not None:
+            corners_reshaped = corners.reshape(-1, 2)
+            tuned_points, confirmed = interactive.fine_tune_checkerboard_grid(
+                img_color,
+                corners_reshaped,
+                pattern_size=pattern_size,
+                window_title="Validar Malha do Bloco Padrao"
+            )
+            if confirmed:
+                corners = tuned_points.reshape(-1, 1, 2)
+                ret = True
+        else:
+            selected = interactive.select_checkerboard_corners_manually(
+                img_color,
+                window_title="Falha Automatica: Selecionar 4 Cantos do Bloco Padrao"
+            )
+            if selected is not None:
+                src_pts = np.array([
+                    [0, 0],
+                    [cols - 1, 0],
+                    [cols - 1, rows - 1],
+                    [0, rows - 1]
+                ], dtype=np.float32)
+                H, _ = cv2.findHomography(src_pts, selected)
+                grid_x, grid_y = np.meshgrid(np.arange(cols), np.arange(rows))
+                ideal_grid = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1).astype(np.float32)
+                projected_grid = cv2.perspectiveTransform(ideal_grid.reshape(-1, 1, 2), H)
+                initial_points = projected_grid.reshape(-1, 2)
+                
+                tuned_points, confirmed = interactive.fine_tune_checkerboard_grid(
+                    img_color,
+                    initial_points,
+                    pattern_size=pattern_size,
+                    window_title="Ajuste Fino da Malha do Bloco Padrao"
+                )
+                if confirmed:
+                    corners = tuned_points.reshape(-1, 1, 2)
+                    ret = True
+                else:
+                    corners = None
+                    ret = False
 
     if not ret or corners is None:
         logger.warning("Bloco padrão de calibração não foi detectado automaticamente.")
         return None
 
     # Refinamento subpixel na imagem original
+    # Usar janela que escala com a resolução da imagem para alta precisão
+    win_size = max(5, int(gray.shape[1] / 1000))
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
     corners = corners.astype(np.float32)
-    cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
+    cv2.cornerSubPix(gray, corners, (win_size, win_size), (-1, -1), criteria)
 
-    logger.info(f"✓ Bloco padrão de calibração detectado e refinado subpixel: {len(corners)} cantos")
+    logger.info(f"[OK] Bloco padrão de calibração detectado e refinado subpixel: {len(corners)} cantos")
     return corners
 
 

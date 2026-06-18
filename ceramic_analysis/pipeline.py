@@ -336,6 +336,10 @@ def cmd_process(args):
                         
                         import sys
                         is_testing = "pytest" in sys.modules
+                        logger.info(
+                            f"  [Escala] INTERACTIVE_CALIBRATION={getattr(config, 'INTERACTIVE_CALIBRATION', True)}, "
+                            f"is_testing={is_testing}, auto_corners_found={auto_corners is not None}"
+                        )
                         if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
                             corners = interactive.validate_calibration_block_grid(
                                 color, auto_corners,
@@ -370,6 +374,10 @@ def cmd_process(args):
                     # Ajuste manual interativo do contorno principal
                     import sys
                     is_testing = "pytest" in sys.modules
+                    logger.info(
+                        f"  [Contorno] INTERACTIVE_CALIBRATION={getattr(config, 'INTERACTIVE_CALIBRATION', True)}, "
+                        f"is_testing={is_testing}"
+                    )
                     if len(seg_results) > 0 and getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
                         primary_metrics = seg_results[0]
                         adjusted_contour, was_adjusted = interactive.adjust_contour(
@@ -406,7 +414,7 @@ def cmd_process(args):
                         if not args.no_annotate and metrics_px == seg_results[0]:
                             ann_dir = Path(config.OUTPUT_DIR) / args.session / "annotated" / view / state
                             ann_path = ann_dir / f"{img_path.stem}_annotated.png"
-                            draw_ellipse = metrics_mm.get("circularity", 0) > 0.7
+                            draw_ellipse = metrics_mm.get("circularity", 0) > 0.80
                             analysis.annotate_image(
                                 color, metrics_mm, str(ann_path),
                                 scale=scale,
@@ -564,7 +572,7 @@ def cmd_cad_compare(args):
         state=args.state,
         strategy=getattr(args, "strategy", "auto"),
         perspective_correction=getattr(args, "perspective_correction", False),
-        no_annotate=True
+        no_annotate=getattr(args, "no_annotate", False)
     )
     measurements = cmd_process(proc_args)
 
@@ -662,7 +670,8 @@ def cmd_cad_compare(args):
             metrics = cad_compare.compare_contours(
                 cad_aligned_mm, photo_contour_mm, cad_bbox,
                 cad_holes=cad_holes_mm,
-                shape_class=orientation["shape_class"]
+                shape_class=orientation["shape_class"],
+                transform=transform
             )
 
             # Converter contornos alinhados de volta para pixel para desenho
@@ -949,6 +958,7 @@ Exemplos:
 # --perspective-correction removed
     p_cad.add_argument("--registration", choices=["icp", "centroid", "bbox_center"], default=None)
     p_cad.add_argument("--tolerance", type=float, default=None, help="Tolerancia limite de desvio (mm)")
+    p_cad.add_argument("--no-annotate", action="store_true", default=False, help="Nao gerar imagens anotadas com cotas")
 
     # report
     p_rep = subparsers.add_parser("report", help="Gera relatório HTML da sessão")

@@ -77,34 +77,60 @@ def find_checkerboard(image_path: str, pattern_size: tuple) -> tuple:
     else:
         gray = img
 
-    # Tentar detectar o checkerboard na imagem original
-    flags = (
-        cv2.CALIB_CB_ADAPTIVE_THRESH
-        + cv2.CALIB_CB_NORMALIZE_IMAGE
-        + cv2.CALIB_CB_FAST_CHECK
-    )
-    found, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags)
-
-    # Se falhar, tentar sem o FAST_CHECK na resolução cheia
-    if not found:
-        flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        found, corners = cv2.findChessboardCorners(gray, pattern_size, flags=flags_no_fast)
-
-    # Se ainda falhar, tentar com downscaling (0.25, depois 0.5) para lidar com alta resolução
-    if not found:
-        flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        for scale in [0.25, 0.5]:
+    # Definir os tamanhos a testar: o padrão e o transposto (caso a câmera esteja rotacionada)
+    cols, rows = pattern_size
+    transposed_size = (rows, cols)
+    
+    # Flags com e sem FAST_CHECK
+    flags_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
+    flags_no_fast = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+    
+    found = False
+    corners = None
+    
+    # Testar diferentes resoluções (escalas) para lidar com imagens de alta resolução
+    # Escalas menores (0.1, 0.15, 0.25) são essenciais para imagens de 60MP+ e rodam instantaneamente
+    for scale in [0.1, 0.15, 0.25, 0.5, 1.0]:
+        if scale == 1.0:
+            gray_sc = gray
+        else:
             gray_sc = cv2.resize(gray, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             
-            # Tentar com FAST_CHECK primeiro
-            found, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags)
-            if not found:
-                # Tentar sem FAST_CHECK
-                found, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags_no_fast)
+        # Evitar erros de assert do OpenCV (adaptiveThreshold) se a imagem for pequena demais
+        min_dim = max(cols, rows) * 6
+        if gray_sc.shape[1] < min_dim or gray_sc.shape[0] < min_dim:
+            continue
             
-            if found:
-                # Projetar os cantos de volta para a escala original
-                corners = corners_sc / scale
+        # 1. Tentar padrão original
+        # Tentar com FAST_CHECK
+        found_orig, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags_fast)
+        if not found_orig:
+            # Tentar sem FAST_CHECK
+            found_orig, corners_sc = cv2.findChessboardCorners(gray_sc, pattern_size, flags=flags_no_fast)
+            
+        if found_orig:
+            corners = corners_sc / scale if scale != 1.0 else corners_sc
+            found = True
+            break
+            
+        # 2. Se falhar, tentar padrão transposto (rotacionado)
+        if transposed_size != pattern_size:
+            found_trans, corners_sc = cv2.findChessboardCorners(gray_sc, transposed_size, flags=flags_fast)
+            if not found_trans:
+                found_trans, corners_sc = cv2.findChessboardCorners(gray_sc, transposed_size, flags=flags_no_fast)
+                
+            if found_trans:
+                # Transpor os cantos para bater com a ordem do pattern_size original
+                # corners_sc tem formato (cols * rows, 1, 2) na orientação transposta
+                # Reshaping para (cols, rows, 2)
+                c_grid = corners_sc.reshape(cols, rows, 2)
+                # Transpor dimensões 0 e 1 -> (rows, cols, 2)
+                c_transposed = c_grid.transpose(1, 0, 2)
+                # Voltar para o formato linear (cols * rows, 1, 2)
+                corners_orig_sc = c_transposed.reshape(-1, 1, 2)
+                
+                corners = corners_orig_sc / scale if scale != 1.0 else corners_orig_sc
+                found = True
                 break
 
     # --- INÍCIO DO AJUSTE MANUAL INTERATIVO ---
@@ -186,12 +212,14 @@ def find_checkerboard(image_path: str, pattern_size: tuple) -> tuple:
 
     if found:
         # Refinamento subpixel dos cantos para maior precisão
+        # Janela se adapta à resolução da imagem (ex: 64MP precisa de janela maior)
+        win_size = max(11, int(gray.shape[1] / 150))
         criteria = (
             cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
             30,   # Máximo de iterações
             0.001  # Precisão desejada (pixels)
         )
-        cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        cv2.cornerSubPix(gray, corners, (win_size, win_size), (-1, -1), criteria)
 
     return found, corners, gray
 
