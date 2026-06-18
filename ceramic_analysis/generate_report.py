@@ -611,6 +611,15 @@ def generate_report(session_id: str):
     
     dev_side_w = dim_side_w - nominal_side_w if dim_side_w > 0 else 0.0
 
+    # Se a vista lateral não foi processada, forçar valores nominais e desvios para 0.0
+    if thickness == 0.0:
+        nominal_thick = 0.0
+        dev_thick = 0.0
+        dev_thick_pct = 0.0
+    if dim_side_w == 0.0:
+        nominal_side_w = 0.0
+        dev_side_w = 0.0
+
     # Ângulos internos dos vértices (se disponíveis)
     angle_0 = float(top_meas.get("corner_angle_0", 0.0)) if top_meas else 0.0
     angle_1 = float(top_meas.get("corner_angle_1", 0.0)) if top_meas else 0.0

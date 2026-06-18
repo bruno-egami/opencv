@@ -319,6 +319,7 @@ def cmd_process(args):
             for img_path in images:
                 logger.info(f"\n  Processando: {img_path.name}")
                 sample_id = extract_sample_id(img_path.name)
+                corners = None
 
                 try:
                     # Desativar equalização se usar estratégia que depende de cor/luminância original
@@ -368,7 +369,8 @@ def cmd_process(args):
                     seg_results = segmentation.segment(
                         gray, color, img_path.stem,
                         background=background,
-                        strategy=args.strategy
+                        strategy=args.strategy,
+                        calibration_corners=corners
                     )
 
                     # Ajuste manual interativo do contorno principal

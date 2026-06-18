@@ -99,6 +99,9 @@ MANUAL_THRESHOLD = None
 # ↑ Aumentar se muitos contornos espúrios forem detectados
 # ↓ Diminuir se peças pequenas não forem detectadas
 MIN_CONTOUR_AREA_PX = 5000
+# Contornos individuais que cobrem mais de 10% da área da imagem são descartados (ex: MDF de fundo)
+MAX_CONTOUR_AREA_PROPORTION = 0.10
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CAMINHOS (relativos à raiz do projeto ceramic_analysis/)

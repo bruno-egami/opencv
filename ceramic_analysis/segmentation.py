@@ -218,6 +218,58 @@ def segment_otsu(gray_blurred: np.ndarray) -> np.ndarray:
     return mask
 
 
+def segment_otsu_dark(gray_blurred: np.ndarray) -> np.ndarray:
+    """
+    Segmentação por Otsu considerando apenas pixels escuros (< 160).
+    Exclui pixels muito claros da calibração (bloco branco/grade) para
+    evitar que enviesem o limiar de Otsu.
+    """
+    # Selecionar pixels < 160
+    pixels = gray_blurred[gray_blurred < 160]
+    
+    if len(pixels) == 0:
+        # Fallback para Otsu padrão se não houver pixels escuros
+        _, mask = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        return mask
+        
+    # Calcular histograma para pixels < 160 (limite 160)
+    hist, _ = np.histogram(pixels, bins=256, range=(0, 256))
+    
+    # Algoritmo de Otsu manual no histograma
+    total = len(pixels)
+    current_max = -1.0
+    thresh_val = 0
+    
+    sum_total = np.sum(np.arange(256) * hist)
+    sum_b = 0.0
+    w_b = 0.0
+    
+    for t in range(160):  # Apenas até 160, pois os outros bins são 0
+        w_b += hist[t]
+        if w_b == 0:
+            continue
+        w_f = total - w_b
+        if w_f == 0:
+            break
+            
+        sum_b += t * hist[t]
+        m_b = sum_b / w_b
+        m_f = (sum_total - sum_b) / w_f
+        
+        # Variância entre classes
+        var_between = w_b * w_f * ((m_b - m_f) ** 2)
+        
+        if var_between > current_max:
+            current_max = var_between
+            thresh_val = t
+            
+    logger.debug(f"  Otsu Dark: limiar calculado = {thresh_val}")
+    
+    # Binarizar a imagem usando o limiar encontrado
+    _, mask = cv2.threshold(gray_blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
+    return mask
+
+
 def segment_adaptive(gray_blurred: np.ndarray) -> np.ndarray:
     """
     Segmentação por threshold adaptativo gaussiano.
@@ -281,7 +333,8 @@ def evaluate_mask_quality(mask: np.ndarray) -> dict:
             circularity = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
             if circularity >= 0.05 and aspect_ratio <= 5.0:
                 # Rejeitar contornos que cobrem a maior parte de ambas as dimensoes da imagem (MDF de fundo)
-                if w < 0.8 * mask.shape[1] or h < 0.8 * mask.shape[0]:
+                # ou que excedam o limite de área máxima (proporcional ou absoluto em pixels para testes)
+                if (w < 0.8 * mask.shape[1] or h < 0.8 * mask.shape[0]) and (area < config.MAX_CONTOUR_AREA_PROPORTION * total_pixels or area < 150000):
                     valid_contours.append(c)
 
     # Calcular compacidade do maior contorno
@@ -595,6 +648,115 @@ def refine_contour_with_edges(contour, gray, margin=30, mode="close") -> tuple:
     else:
         return contour, 0.0
 
+def _preprocess_mdf_background(
+    gray_blurred: np.ndarray,
+    image_color: np.ndarray,
+    calibration_corners: np.ndarray = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Detecta fundo de mesa branco ao redor da placa MDF e remove a borda queimada a laser.
+    Também mascara o bloco de calibração se fornecido.
+    Homogeniza as regiões externas/bloco com a cor mediana do MDF.
+    """
+    # Se o bloco de calibração foi detectado, removemos ele primeiro preenchendo com a cor mediana do MDF
+    if calibration_corners is not None:
+        try:
+            x, y, cw, ch = cv2.boundingRect(calibration_corners.astype(np.int32))
+            
+            # Criar máscara para o bloco
+            calib_mask = np.zeros(gray_blurred.shape, dtype=np.uint8)
+            hull = cv2.convexHull(calibration_corners.astype(np.int32))
+            cv2.drawContours(calib_mask, [hull], -1, 255, -1)
+            
+            # Dilatar a máscara para cobrir a borda de 3mm do bloco
+            square_size_px = max(cw / 7.0, ch / 6.0)
+            scale_px_mm = square_size_px / 6.0
+            dilation_px = int(np.ceil(3.0 * scale_px_mm)) + 5  # 3mm de borda + 5px de margem
+            
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilation_px + 1, 2 * dilation_px + 1))
+            calib_mask_dilated = cv2.dilate(calib_mask, kernel)
+            
+            # Copiar para modificação segura
+            gray_out = gray_blurred.copy()
+            color_out = image_color.copy()
+            
+            # Criar máscara temporária excluindo a região dilata e o fundo claro (>210)
+            ex_mask = np.ones(gray_blurred.shape, dtype=np.uint8) * 255
+            ex_mask[calib_mask_dilated == 255] = 0
+            
+            _, white_mask = cv2.threshold(gray_blurred, 210, 255, cv2.THRESH_BINARY)
+            ex_mask[white_mask == 255] = 0
+            
+            # Calcular cor mediana do MDF livre de interferências
+            mdf_gray_pixels = gray_blurred[ex_mask == 255]
+            median_gray = int(np.median(mdf_gray_pixels)) if len(mdf_gray_pixels) > 0 else 149
+            
+            mdf_color_pixels = image_color[ex_mask == 255]
+            if len(mdf_color_pixels) > 0:
+                median_color = np.median(mdf_color_pixels, axis=0).astype(np.uint8)
+            else:
+                median_color = np.array([149, 149, 149], dtype=np.uint8)
+                
+            # Pintar a região do bloco de calibração com a cor mediana do MDF
+            gray_out[calib_mask_dilated == 255] = median_gray
+            color_out[calib_mask_dilated == 255] = median_color
+            
+            gray_blurred = gray_out
+            image_color = color_out
+            logger.info("  [Pre-processamento] Bloco de calibração mascarado com cor do MDF.")
+        except Exception as e:
+            logger.warning(f"  [Pre-processamento] Falha ao mascarar bloco de calibração: {e}")
+
+    # Detectar o fundo branco da mesa
+    _, thresh = cv2.threshold(gray_blurred, 210, 255, cv2.THRESH_BINARY)
+    
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return gray_blurred, image_color
+        
+    largest_contour = max(contours, key=cv2.contourArea)
+    largest_area = cv2.contourArea(largest_contour)
+    total_area = gray_blurred.shape[0] * gray_blurred.shape[1]
+    
+    if (largest_area / total_area) > 0.30:
+        logger.info(
+            f"  [Pre-processamento] Fundo branco detectado ({largest_area/total_area*100:.1f}%). "
+            f"Limpando bordas e homogenizando com cor do MDF..."
+        )
+        # Criar máscara para o MDF (255 = MDF, 0 = fora)
+        mdf_mask = np.ones(gray_blurred.shape, dtype=np.uint8) * 255
+        cv2.drawContours(mdf_mask, [largest_contour], -1, 0, -1)
+        
+        # Erosão de 1.5% da menor dimensão
+        h, w = gray_blurred.shape[:2]
+        min_dim = min(h, w)
+        erosion_sz = int(np.round(min_dim * 0.015))
+        if erosion_sz % 2 == 0:
+            erosion_sz += 1
+            
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_sz, erosion_sz))
+        eroded_mdf_mask = cv2.erode(mdf_mask, kernel, iterations=1)
+        
+        # Cores medianas da região MDF
+        mdf_gray_pixels = gray_blurred[eroded_mdf_mask == 255]
+        median_gray = int(np.median(mdf_gray_pixels)) if len(mdf_gray_pixels) > 0 else 149
+        
+        mdf_color_pixels = image_color[eroded_mdf_mask == 255]
+        if len(mdf_color_pixels) > 0:
+            median_color = np.median(mdf_color_pixels, axis=0).astype(np.uint8)
+        else:
+            median_color = np.array([149, 149, 149], dtype=np.uint8)
+            
+        gray_out = gray_blurred.copy()
+        color_out = image_color.copy()
+        
+        gray_out[eroded_mdf_mask == 0] = median_gray
+        color_out[eroded_mdf_mask == 0] = median_color
+        
+        return gray_out, color_out
+        
+    return gray_blurred, image_color
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Função principal de segmentação
@@ -607,7 +769,8 @@ def segment(
     background: np.ndarray = None,
     strategy: str = None,
     save_mask: bool = True,
-    masks_dir: str = None
+    masks_dir: str = None,
+    calibration_corners: np.ndarray = None
 ) -> list:
     """
     Segmenta o corpo de prova na imagem e extrai métricas geométricas.
@@ -621,6 +784,7 @@ def segment(
         strategy: Estratégia de segmentação. Default: config.SEGMENTATION_STRATEGY.
         save_mask: Se True, salva a máscara em data/masks/ para inspeção no ImageJ.
         masks_dir: Diretório para salvar máscaras. Default: config.MASKS_DIR.
+        calibration_corners: Cantos detectados do bloco de calibração.
 
     Returns:
         Lista de dicts, um por contorno válido encontrado. Cada dict contém
@@ -635,6 +799,9 @@ def segment(
 
     logger.info(f"  Segmentando '{image_name}' (estratégia: {strategy})")
 
+    # Pré-processamento: isolar MDF e limpar o fundo / borda queimada a laser / bloco calib
+    gray_blurred, image_color = _preprocess_mdf_background(gray_blurred, image_color, calibration_corners)
+
     mask = None
 
     if strategy == "auto":
@@ -645,6 +812,7 @@ def segment(
         strategies_to_try.append(("lab_b", None))
         if background is not None:
             strategies_to_try.append(("background_sub", background))
+        strategies_to_try.append(("otsu_dark", None))
         strategies_to_try.append(("lab", None))
         strategies_to_try.append(("otsu", None))
 
@@ -689,6 +857,7 @@ def segment(
 
     # Filtrar por área mínima, circularidade e aspect ratio (evita ruídos em forma de linha)
     valid_contours = []
+    total_pixels = mask.shape[0] * mask.shape[1]
     for c in contours:
         area = cv2.contourArea(c)
         if area < config.MIN_CONTOUR_AREA_PX:
@@ -702,9 +871,9 @@ def segment(
         perimeter = cv2.arcLength(c, True)
         circularity = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
         
-        if circularity < 0.05 or aspect_ratio > 5.0:
+        if circularity < 0.05 or aspect_ratio > 5.0 or (area >= config.MAX_CONTOUR_AREA_PROPORTION * total_pixels and area >= 150000):
             logger.info(
-                f"  Descartando contorno ruidoso: área={area:.0f} px², "
+                f"  Descartando contorno ruidoso/muito grande: área={area:.0f} px², "
                 f"bbox={w}x{h} px, circularidade={circularity:.3f}, aspect_ratio={aspect_ratio:.2f}"
             )
             continue
@@ -807,6 +976,9 @@ def _apply_strategy(
 
     elif strategy == "otsu":
         return segment_otsu(gray_blurred)
+
+    elif strategy == "otsu_dark":
+        return segment_otsu_dark(gray_blurred)
 
     elif strategy == "adaptive":
         return segment_adaptive(gray_blurred)
