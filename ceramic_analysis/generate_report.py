@@ -353,14 +353,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="card-sub">Anisotropia: {anisotropy:.1%} ({scale_v:.2f} px/mm vertical)</div>
                 </div>
 
-                <div class="card">
-                    <div class="card-title">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
-                        Precisão CAD (IoU)
-                    </div>
-                    <div class="card-value">{iou:.1%}</div>
-                    <div class="card-sub">Desvio Médio CAD: {mean_dev:.2f} mm</div>
-                </div>
+                {cad_card_html}
             </div>
         </section>
 
@@ -412,6 +405,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- Tabela Completa de Medições -->
         <section>
             <h2 class="section-title">Dados Detalhados de Medição</h2>
+            
+            <div style="background-color: rgba(59, 130, 246, 0.1); border-left: 4px solid #3b82f6; padding: 1rem; margin-bottom: 1.5rem; border-radius: 4px;">
+                <p style="margin: 0; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.5;">
+                    <strong>Nota sobre as métricas:</strong> Os valores principais de <em>Comprimento</em> e <em>Largura da Peça</em> representam as dimensões totais absolutas do contorno da peça (Retângulo de Área Mínima). Já as <em>Medições Transversais (10%, 50%, 90%)</em> representam as aferições pontuais nas fatias internas, permitindo identificar variações dimensionais ao longo da peça.
+                </p>
+            </div>
+
             <div class="table-container">
                 <table>
                     <thead>
@@ -419,8 +419,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <th>Vista</th>
                             <th>Métrica</th>
                             <th>Valor Medido</th>
-                            <th>Valor CAD</th>
-                            <th>Desvio</th>
+                            {cad_th_html}
                         </tr>
                     </thead>
                     <tbody>
@@ -428,38 +427,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Comprimento da Peça (Maior)</td>
                             <td>{dim_top_len:.2f} mm</td>
-                            <td>{nominal_len:.2f} mm</td>
-                            <td><strong style="color: {dev_len_color};">{dev_len:+.2f} mm</strong> ({dev_len_pct:+.1f}%)</td>
+                            {cad_len_td_html}
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Largura da Peça (Menor)</td>
                             <td>{dim_top_width:.2f} mm</td>
-                            <td>{nominal_width:.2f} mm</td>
-                            <td><strong style="color: {dev_width_color};">{dev_width:+.2f} mm</strong> ({dev_width_pct:+.1f}%)</td>
+                            {cad_width_td_html}
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Área Projetada</td>
                             <td>{area_top:.2f} mm²</td>
-                            <td>{nominal_area:.2f} mm²</td>
-                            <td>{dev_area_pct:+.2f}%</td>
+                            {cad_area_td_html}
                         </tr>
-                        <tr>
-                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
-                            <td>Espessura (Altura)</td>
-                            <td>{thickness:.2f} mm</td>
-                            <td>{nominal_thick:.2f} mm</td>
-                            <td><strong style="color: {dev_thick_color};">{dev_thick:+.2f} mm</strong> ({dev_thick_pct:+.1f}%)</td>
-                        </tr>
-                        <tr>
-                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
-                            <td>Largura (Perfil)</td>
-                            <td>{dim_side_w:.2f} mm</td>
-                            <td>{nominal_side_w:.2f} mm</td>
-                            <td>{dev_side_w:+.2f} mm</td>
-                        </tr>
+                        {side_rows_html}
                         {angle_rows_html}
+                        {cross_section_rows_html}
                     </tbody>
                 </table>
             </div>
@@ -611,14 +595,8 @@ def generate_report(session_id: str):
     
     dev_side_w = dim_side_w - nominal_side_w if dim_side_w > 0 else 0.0
 
-    # Se a vista lateral não foi processada, forçar valores nominais e desvios para 0.0
-    if thickness == 0.0:
-        nominal_thick = 0.0
-        dev_thick = 0.0
-        dev_thick_pct = 0.0
-    if dim_side_w == 0.0:
-        nominal_side_w = 0.0
-        dev_side_w = 0.0
+    # Determinar se existe comparação CAD
+    has_cad = bool(top_cad) or bool(front_cad)
 
     # Ângulos internos dos vértices (se disponíveis)
     angle_0 = float(top_meas.get("corner_angle_0", 0.0)) if top_meas else 0.0
@@ -626,38 +604,122 @@ def generate_report(session_id: str):
     angle_2 = float(top_meas.get("corner_angle_2", 0.0)) if top_meas else 0.0
     angle_3 = float(top_meas.get("corner_angle_3", 0.0)) if top_meas else 0.0
 
+    # --- Construir HTML condicional: CAD card ---
+    if has_cad:
+        cad_card_html = f"""<div class="card">
+                    <div class="card-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                        Precisão CAD (IoU)
+                    </div>
+                    <div class="card-value">{iou:.1%}</div>
+                    <div class="card-sub">Desvio Médio CAD: {mean_dev:.2f} mm</div>
+                </div>"""
+    else:
+        cad_card_html = ""
+
+    # --- Construir HTML condicional: colunas CAD na tabela ---
+    if has_cad:
+        cad_th_html = "<th>Valor CAD</th>\n                            <th>Desvio</th>"
+        cad_len_td_html = f'<td>{nominal_len:.2f} mm</td>\n                            <td><strong style="color: {dev_len_color};">{dev_len:+.2f} mm</strong> ({dev_len_pct:+.1f}%)</td>'
+        cad_width_td_html = f'<td>{nominal_width:.2f} mm</td>\n                            <td><strong style="color: {dev_width_color};">{dev_width:+.2f} mm</strong> ({dev_width_pct:+.1f}%)</td>'
+        cad_area_td_html = f'<td>{nominal_area:.2f} mm²</td>\n                            <td>{dev_area_pct:+.2f}%</td>'
+    else:
+        cad_th_html = ""
+        cad_len_td_html = ""
+        cad_width_td_html = ""
+        cad_area_td_html = ""
+
+    # --- Construir HTML condicional: linhas da vista lateral ---
+    side_rows_html = ""
+    if thickness > 0.0 or dim_side_w > 0.0:
+        if has_cad:
+            side_rows_html = f"""
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>Espessura (Altura)</td>
+                            <td>{thickness:.2f} mm</td>
+                            <td>{nominal_thick:.2f} mm</td>
+                            <td><strong style="color: {dev_thick_color};">{dev_thick:+.2f} mm</strong> ({dev_thick_pct:+.1f}%)</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>Largura (Perfil)</td>
+                            <td>{dim_side_w:.2f} mm</td>
+                            <td>{nominal_side_w:.2f} mm</td>
+                            <td>{dev_side_w:+.2f} mm</td>
+                        </tr>"""
+        else:
+            side_rows_html = f"""
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>Espessura (Altura)</td>
+                            <td>{thickness:.2f} mm</td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>Largura (Perfil)</td>
+                            <td>{dim_side_w:.2f} mm</td>
+                        </tr>"""
+
+    # --- Construir HTML: ângulos ---
     angle_rows_html = ""
     if angle_0 > 0:
-        angle_rows_html = f"""
+        angle_labels = [
+            ("Ângulo Vértice 1 (Sup-Esq)", angle_0),
+            ("Ângulo Vértice 2 (Sup-Dir)", angle_1),
+            ("Ângulo Vértice 3 (Inf-Dir)", angle_2),
+            ("Ângulo Vértice 4 (Inf-Esq)", angle_3),
+        ]
+        for label, angle_val in angle_labels:
+            dev_str = f"{angle_val - 90.00:+.2f}°"
+            if has_cad:
+                angle_rows_html += f"""
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
-                            <td>Ângulo Vértice 1 (Sup-Esq)</td>
-                            <td>{angle_0:.2f}°</td>
+                            <td>{label}</td>
+                            <td>{angle_val:.2f}°</td>
                             <td>90.00°</td>
-                            <td>{angle_0 - 90.00:+.2f}°</td>
-                        </tr>
+                            <td>{dev_str}</td>
+                        </tr>"""
+            else:
+                angle_rows_html += f"""
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
-                            <td>Ângulo Vértice 2 (Sup-Dir)</td>
-                            <td>{angle_1:.2f}°</td>
-                            <td>90.00°</td>
-                            <td>{angle_1 - 90.00:+.2f}°</td>
-                        </tr>
+                            <td>{label}</td>
+                            <td>{angle_val:.2f}° ({dev_str} vs 90°)</td>
+                        </tr>"""
+
+    # --- Construir HTML: seções transversais ---
+    cross_section_rows_html = ""
+    cross_keys = [
+        ("Largura a 10%", "cross_width_10pct_mm"),
+        ("Largura a 50%", "cross_width_50pct_mm"),
+        ("Largura a 90%", "cross_width_90pct_mm"),
+        ("Comprimento a 10%", "cross_length_10pct_mm"),
+        ("Comprimento a 50%", "cross_length_50pct_mm"),
+        ("Comprimento a 90%", "cross_length_90pct_mm"),
+    ]
+    has_cross = any(top_meas.get(k, 0) for _, k in cross_keys) if top_meas else False
+    if has_cross:
+        for label, key in cross_keys:
+            val = float(top_meas.get(key, 0.0))
+            if val > 0:
+                if has_cad:
+                    cross_section_rows_html += f"""
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
-                            <td>Ângulo Vértice 3 (Inf-Dir)</td>
-                            <td>{angle_2:.2f}°</td>
-                            <td>90.00°</td>
-                            <td>{angle_2 - 90.00:+.2f}°</td>
-                        </tr>
+                            <td>{label}</td>
+                            <td>{val:.2f} mm</td>
+                            <td>—</td>
+                            <td>—</td>
+                        </tr>"""
+                else:
+                    cross_section_rows_html += f"""
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
-                            <td>Ângulo Vértice 4 (Inf-Esq)</td>
-                            <td>{angle_3:.2f}°</td>
-                            <td>90.00°</td>
-                            <td>{angle_3 - 90.00:+.2f}°</td>
-                        </tr>
-        """
+                            <td>{label}</td>
+                            <td>{val:.2f} mm</td>
+                        </tr>"""
 
     def get_color(val):
         return "#10b981" if abs(val) < 1.5 else "#ef4444"
@@ -690,29 +752,18 @@ def generate_report(session_id: str):
         scale_h=scale_h,
         scale_v=scale_v,
         anisotropy=anisotropy,
-        iou=iou,
-        mean_dev=mean_dev,
-        dev_len=dev_len,
-        dev_len_pct=dev_len_pct,
-        dev_width=dev_width,
-        dev_width_pct=dev_width_pct,
-        dev_thick=dev_thick,
-        dev_thick_pct=dev_thick_pct,
-        dev_area_pct=dev_area_pct,
-        dev_side_w=dev_side_w,
-        dev_len_color=dev_len_color,
-        dev_width_color=dev_width_color,
-        dev_thick_color=dev_thick_color,
         annotated_top=annotated_top,
         annotated_side=annotated_side,
         deviation_top=deviation_top,
         deviation_side=deviation_side,
-        nominal_len=nominal_len,
-        nominal_width=nominal_width,
-        nominal_area=nominal_area,
-        nominal_thick=nominal_thick,
-        nominal_side_w=nominal_side_w,
-        angle_rows_html=angle_rows_html
+        cad_card_html=cad_card_html,
+        cad_th_html=cad_th_html,
+        cad_len_td_html=cad_len_td_html,
+        cad_width_td_html=cad_width_td_html,
+        cad_area_td_html=cad_area_td_html,
+        side_rows_html=side_rows_html,
+        angle_rows_html=angle_rows_html,
+        cross_section_rows_html=cross_section_rows_html,
     )
 
     output_session_dir = Path(config.OUTPUT_DIR) / session_id
@@ -727,3 +778,4 @@ if __name__ == "__main__":
     import sys
     sess = sys.argv[1] if len(sys.argv) > 1 else "16-06"
     generate_report(sess)
+

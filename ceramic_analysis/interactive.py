@@ -38,11 +38,23 @@ class InteractiveContourEditor:
         # Guardar contorno original para referência
         self.original_contour = auto_contour.copy()
         
-        # Inicializar vértices a partir do retângulo de área mínima (4 cantos)
+        # Inicializar vértices a partir do retângulo de área mínima com 3 nós intermediários por aresta (total 16 pontos de amarração)
         rect = cv2.minAreaRect(auto_contour)
         box = cv2.boxPoints(rect)
-        self.vertices = [list(pt) for pt in box]
-        self.initial_vertices = [list(pt) for pt in box]
+        
+        vertices = []
+        for i in range(4):
+            p1 = box[i]
+            p2 = box[(i + 1) % 4]
+            # Adicionar o vértice inicial da aresta
+            vertices.append(list(p1))
+            # Adicionar os 3 pontos intermediários
+            for step in [0.25, 0.50, 0.75]:
+                pt_inter = p1 + step * (p2 - p1)
+                vertices.append(pt_inter.tolist())
+                
+        self.vertices = vertices
+        self.initial_vertices = [list(pt) for pt in vertices]
         
         # Dimensões da janela ajustadas pela resolução e aspect ratio
         img_h, img_w = self.img.shape[:2]

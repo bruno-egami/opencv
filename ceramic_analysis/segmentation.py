@@ -529,7 +529,152 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
         "hull": hull,
     }
 
+    # Calcular seções transversais (3 seções em cada eixo: 10%, 50%, 90%)
+    cross_sections = compute_cross_sections(contour, min_rect)
+    if cross_sections:
+        metrics.update(cross_sections)
+
     return metrics
+
+
+def compute_cross_sections(
+    contour: np.ndarray,
+    min_rect: tuple,
+    positions: list = None
+) -> dict:
+    """
+    Calcula medições em seções transversais ao longo dos eixos maior e menor.
+
+    Traça retas perpendiculares ao eixo em posições relativas (ex: 10%, 50%, 90%)
+    e mede a distância entre as interseções com o contorno.
+
+    Args:
+        contour: Contorno OpenCV (array Nx1x2).
+        min_rect: Resultado de cv2.minAreaRect(contour) — (center, (w, h), angle).
+        positions: Lista de posições relativas (0.0 a 1.0). Default: [0.10, 0.50, 0.90].
+
+    Returns:
+        Dict com as medidas em pixels:
+            - cross_width_10pct_px, cross_width_50pct_px, cross_width_90pct_px
+            - cross_length_10pct_px, cross_length_50pct_px, cross_length_90pct_px
+            - cross_width_pts (lista de pares de pontos para desenho)
+            - cross_length_pts (lista de pares de pontos para desenho)
+        Retorna None se o contorno for insuficiente.
+    """
+    if positions is None:
+        positions = [0.10, 0.50, 0.90]
+
+    center, (rect_w, rect_h), angle = min_rect
+
+    # Garantir que o eixo maior é o "comprimento" e o menor é a "largura"
+    if rect_w >= rect_h:
+        major_len = rect_w
+        minor_len = rect_h
+        theta = np.radians(angle)
+    else:
+        major_len = rect_h
+        minor_len = rect_w
+        theta = np.radians(angle + 90)
+
+    # Vetores unitários do eixo maior e menor
+    u_major = np.array([np.cos(theta), np.sin(theta)])
+    u_minor = np.array([-np.sin(theta), np.cos(theta)])
+    center_pt = np.array(center)
+
+    # Converter contorno para array 2D
+    pts = contour.reshape(-1, 2).astype(np.float64)
+
+    result = {}
+    width_pts_list = []
+    length_pts_list = []
+
+    # Seções transversais ao longo do eixo MAIOR (medem LARGURA)
+    for pos in positions:
+        t = pos - 0.5  # -0.4, 0.0, 0.4
+        origin = center_pt + t * major_len * u_major
+
+        # Encontrar interseções do contorno com a reta perpendicular ao eixo maior
+        intersections = _find_contour_line_intersections(pts, origin, u_minor)
+
+        if len(intersections) >= 2:
+            # Pegar os 2 pontos mais distantes (extremos)
+            intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_minor))
+            p1 = intersections[0]
+            p2 = intersections[-1]
+            width_px = np.linalg.norm(p2 - p1)
+            pos_pct = int(pos * 100)
+            result[f"cross_width_{pos_pct}pct_px"] = width_px
+            width_pts_list.append((p1.tolist(), p2.tolist(), pos))
+        else:
+            pos_pct = int(pos * 100)
+            result[f"cross_width_{pos_pct}pct_px"] = 0.0
+
+    # Seções transversais ao longo do eixo MENOR (medem COMPRIMENTO)
+    for pos in positions:
+        t = pos - 0.5
+        origin = center_pt + t * minor_len * u_minor
+
+        intersections = _find_contour_line_intersections(pts, origin, u_major)
+
+        if len(intersections) >= 2:
+            intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_major))
+            p1 = intersections[0]
+            p2 = intersections[-1]
+            length_px = np.linalg.norm(p2 - p1)
+            pos_pct = int(pos * 100)
+            result[f"cross_length_{pos_pct}pct_px"] = length_px
+            length_pts_list.append((p1.tolist(), p2.tolist(), pos))
+        else:
+            pos_pct = int(pos * 100)
+            result[f"cross_length_{pos_pct}pct_px"] = 0.0
+
+    result["cross_width_pts"] = width_pts_list
+    result["cross_length_pts"] = length_pts_list
+
+    return result if any(v > 0 for k, v in result.items() if k.endswith("_px")) else None
+
+
+def _find_contour_line_intersections(
+    pts: np.ndarray,
+    origin: np.ndarray,
+    direction: np.ndarray
+) -> list:
+    """
+    Encontra pontos de interseção entre um contorno (polígono) e uma reta infinita.
+
+    A reta é definida por origin + t * direction.
+    Cada aresta do contorno é testada para interseção.
+
+    Args:
+        pts: Array Nx2 de pontos do contorno.
+        origin: Ponto de origem da reta (2D).
+        direction: Vetor direção da reta (2D).
+
+    Returns:
+        Lista de np.array (pontos de interseção).
+    """
+    intersections = []
+    n = len(pts)
+
+    # Normal da reta de corte
+    d_perp = np.array([-direction[1], direction[0]])
+
+    for i in range(n):
+        p1 = pts[i]
+        p2 = pts[(i + 1) % n]
+
+        # Distância com sinal de cada ponto à reta
+        s1 = np.dot(p1 - origin, d_perp)
+        s2 = np.dot(p2 - origin, d_perp)
+
+        # Se os sinais diferem, a aresta cruza a reta
+        if s1 * s2 < 0:
+            # Interpolação linear para encontrar o ponto de cruzamento
+            t = s1 / (s1 - s2)
+            intersection = p1 + t * (p2 - p1)
+            intersections.append(intersection)
+
+    return intersections
 
 
 def check_and_correct_inversion(mask: np.ndarray) -> np.ndarray:

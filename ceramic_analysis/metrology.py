@@ -360,6 +360,18 @@ def convert_measurements(metrics_px: dict, scale: dict) -> dict:
     metrics_mm["ellipse_major_mm"] = metrics_px["ellipse_major_px"] / px_el_major
     metrics_mm["ellipse_minor_mm"] = metrics_px["ellipse_minor_px"] / px_el_minor
 
+    # Seções transversais: converter de px para mm
+    # As seções de "width" são perpendiculares ao eixo maior (orientação do min_rect_h),
+    # e as de "length" são perpendiculares ao eixo menor (orientação do min_rect_w).
+    for pos_pct in [10, 50, 90]:
+        w_key = f"cross_width_{pos_pct}pct_px"
+        if w_key in metrics_px and metrics_px[w_key] > 0:
+            metrics_mm[f"cross_width_{pos_pct}pct_mm"] = metrics_px[w_key] / px_h_rect
+
+        l_key = f"cross_length_{pos_pct}pct_px"
+        if l_key in metrics_px and metrics_px[l_key] > 0:
+            metrics_mm[f"cross_length_{pos_pct}pct_mm"] = metrics_px[l_key] / px_w
+
     # Metadados de escala (para rastreabilidade)
     metrics_mm["px_per_mm_h"] = px_h
     metrics_mm["px_per_mm_v"] = px_v
@@ -367,3 +379,4 @@ def convert_measurements(metrics_px: dict, scale: dict) -> dict:
     metrics_mm["view_mode"] = scale["view_mode"]
 
     return metrics_mm
+

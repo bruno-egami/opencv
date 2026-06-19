@@ -495,6 +495,15 @@ def annotate_image(
             px_v = scale.get("px_per_mm_v", 1.0) if scale else 1.0
             
             # Desenhar cotas para os 4 segmentos do retângulo orientado
+            # Descobrir qual é major e minor do min_rect
+            rect_w_mm = metrics.get("min_rect_w_mm", 0)
+            rect_h_mm = metrics.get("min_rect_h_mm", 0)
+            major_mm = max(rect_w_mm, rect_h_mm)
+            minor_mm = min(rect_w_mm, rect_h_mm)
+
+            drawn_length = False
+            drawn_width = False
+
             for i in range(4):
                 p1 = box[i]
                 p2 = box[(i + 1) % 4]
@@ -504,14 +513,36 @@ def annotate_image(
                 dy_mm = (p2[1] - p1[1]) / px_v
                 len_mm = np.sqrt(dx_mm**2 + dy_mm**2)
                 
-                # Evitar cotar segmentos excessivamente pequenos (ruído ou erros)
+                # Evitar cotar segmentos excessivamente pequenos
                 if len_mm < 1.0:
                     continue
                     
-                _draw_segment_cota(
-                    annotated, p1, p2, center_pt, len_mm,
-                    font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness
-                )
+                if abs(len_mm - major_mm) <= abs(len_mm - minor_mm):
+                    # Edge de comprimento (Length)
+                    if not drawn_length:
+                        if "cross_length_10pct_mm" in metrics:
+                            l10 = metrics["cross_length_10pct_mm"]
+                            l50 = metrics["cross_length_50pct_mm"]
+                            l90 = metrics["cross_length_90pct_mm"]
+                            _draw_segment_cota(annotated, p1, p2, center_pt, l10, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{l10:.1f} mm", offset_multiplier=1.0, text_shift_index=-1)
+                            _draw_segment_cota(annotated, p1, p2, center_pt, l50, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{l50:.1f} mm", offset_multiplier=2.5, text_shift_index=0)
+                            _draw_segment_cota(annotated, p1, p2, center_pt, l90, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{l90:.1f} mm", offset_multiplier=4.0, text_shift_index=1)
+                        else:
+                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=1.0)
+                        drawn_length = True
+                else:
+                    # Edge de largura (Width)
+                    if not drawn_width:
+                        if "cross_width_10pct_mm" in metrics:
+                            w10 = metrics["cross_width_10pct_mm"]
+                            w50 = metrics["cross_width_50pct_mm"]
+                            w90 = metrics["cross_width_90pct_mm"]
+                            _draw_segment_cota(annotated, p1, p2, center_pt, w10, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{w10:.1f} mm", offset_multiplier=1.0, text_shift_index=-1)
+                            _draw_segment_cota(annotated, p1, p2, center_pt, w50, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{w50:.1f} mm", offset_multiplier=2.5, text_shift_index=0)
+                            _draw_segment_cota(annotated, p1, p2, center_pt, w90, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{w90:.1f} mm", offset_multiplier=4.0, text_shift_index=1)
+                        else:
+                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=1.0)
+                        drawn_width = True
         elif "bbox_x" in metrics and "bbox_y" in metrics and "bbox_w" in metrics and "bbox_h" in metrics:
             x, y = metrics["bbox_x"], metrics["bbox_y"]
             bw, bh = metrics["bbox_w"], metrics["bbox_h"]
@@ -569,35 +600,7 @@ def annotate_image(
                     center=True
                 )
 
-            # Desenhar ângulos nos vértices
-            if "corners_px" in metrics and "corner_angles" in metrics and metrics["corners_px"]:
-                corners_px = metrics["corners_px"]
-                corner_angles = metrics["corner_angles"]
-                center_x = metrics.get("min_rect_center_x", w // 2)
-                center_y = metrics.get("min_rect_center_y", h // 2)
-                
-                for pt, angle in zip(corners_px, corner_angles):
-                    px, py = pt
-                    # Vetor do centro para o vértice para deslocar o texto para fora
-                    dx = px - center_x
-                    dy = py - center_y
-                    dist = np.sqrt(dx**2 + dy**2)
-                    if dist > 0:
-                        nx = dx / dist
-                        ny = dy / dist
-                        # Deslocar para fora da peça
-                        text_offset_px = int(35 * font_scale)
-                        tx = int(px + nx * text_offset_px)
-                        ty = int(py + ny * text_offset_px)
-                    else:
-                        tx, ty = px, py
-                        
-                    text_angle = f"{angle:.1f}°"
-                    _draw_text_with_bg(
-                        annotated, text_angle, (tx, ty),
-                        font_scale * 0.65, COLOR_ELLIPSE, COLOR_TEXT_BG, max(1, thickness - 1),
-                        center=True
-                    )
+
 
     # Metadados de escala no canto inferior esquerdo
     if scale:
@@ -646,11 +649,37 @@ def _draw_text_with_bg(
     # Texto
     cv2.putText(img, text, (x, y), font, font_scale, color, thickness)
 
+def _draw_dashed_line(img, p1, p2, color, thickness, dash_length=10, gap_length=6):
+    """Desenha uma linha tracejada entre p1 e p2."""
+    p1 = np.array(p1, dtype=np.float64)
+    p2 = np.array(p2, dtype=np.float64)
+    d = p2 - p1
+    length = np.linalg.norm(d)
+    if length < 1:
+        return
+    u = d / length
 
-def _draw_segment_cota(img, p1, p2, center_pt, len_mm, font_scale, color_cota, color_text, color_bg, thickness):
+    dist = 0.0
+    drawing = True
+    while dist < length:
+        seg_len = dash_length if drawing else gap_length
+        end_dist = min(dist + seg_len, length)
+        if drawing:
+            pt_start = p1 + u * dist
+            pt_end = p1 + u * end_dist
+            cv2.line(
+                img,
+                (int(round(pt_start[0])), int(round(pt_start[1]))),
+                (int(round(pt_end[0])), int(round(pt_end[1]))),
+                color, thickness, cv2.LINE_AA
+            )
+        dist = end_dist
+        drawing = not drawing
+
+
+def _draw_segment_cota(img, p1, p2, center_pt, len_mm, font_scale, color_cota, color_text, color_bg, thickness, custom_text=None, offset_multiplier=1.0, text_shift_index=0):
     """
-    Desenha uma cota (linha de medição, linhas de extensão, ticks de 45° e texto)
-    paralela ao segmento de reta p1-p2, deslocada para fora da peça (afastando-se de center_pt).
+    Desenha uma cota de engenharia paralela a um segmento (aresta do min_rect).
     """
     p1 = np.array(p1, dtype=np.float64)
     p2 = np.array(p2, dtype=np.float64)
@@ -672,8 +701,8 @@ def _draw_segment_cota(img, p1, p2, center_pt, len_mm, font_scale, color_cota, c
     if np.dot(v_c, n) < 0:
         n = -n
         
-    # Offset da linha de cota
-    offset_px = int(45 * font_scale)
+    # Deslocamento da cota em relação ao segmento original
+    offset_px = int(30 * font_scale * offset_multiplier)
     tick_size = int(6 * font_scale)
     
     p1_cota = p1 + n * offset_px
@@ -712,9 +741,22 @@ def _draw_segment_cota(img, p1, p2, center_pt, len_mm, font_scale, color_cota, c
     t2_p2 = p2_cota - t1 * tick_size
     cv2.line(img, (int(round(t2_p1[0])), int(round(t2_p1[1]))), (int(round(t2_p2[0])), int(round(t2_p2[1]))), color_cota, 2, cv2.LINE_AA)
     
-    # Texto da cota
-    text = f"{len_mm:.2f} mm"
-    text_pos = mid + n * (offset_px + int(12 * font_scale))
+    # Texto centralizado no vetor offset (acima da linha principal)
+    text = custom_text if custom_text else f"{len_mm:.2f} mm"
+    
+    # Calcular tamanho do texto para escalonamento
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size, _ = cv2.getTextSize(text, font, font_scale * 0.7, max(1, thickness - 1))
+    tw, th = text_size
+    
+    text_shift_vec = np.array([0.0, 0.0])
+    # Se a aresta for mais vertical do que horizontal, u[1] domina.
+    # Precisamos escalonar o texto ao longo da aresta (u) para evitar sobreposição horizontal.
+    if abs(u[1]) > abs(u[0]) and text_shift_index != 0:
+        shift_amount = text_shift_index * (th * 2.5)
+        text_shift_vec = u * shift_amount
+        
+    text_pos = mid + n * (offset_px + int(12 * font_scale)) + text_shift_vec
     text_pos_i = (int(round(text_pos[0])), int(round(text_pos[1])))
     
     _draw_text_with_bg(
