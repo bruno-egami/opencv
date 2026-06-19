@@ -38,20 +38,13 @@ class InteractiveContourEditor:
         # Guardar contorno original para referência
         self.original_contour = auto_contour.copy()
         
-        # Inicializar vértices a partir do retângulo de área mínima com 3 nós intermediários por aresta (total 16 pontos de amarração)
+        # Inicializar apenas com os 4 cantos do retângulo de área mínima
         rect = cv2.minAreaRect(auto_contour)
         box = cv2.boxPoints(rect)
         
         vertices = []
         for i in range(4):
-            p1 = box[i]
-            p2 = box[(i + 1) % 4]
-            # Adicionar o vértice inicial da aresta
-            vertices.append(list(p1))
-            # Adicionar os 3 pontos intermediários
-            for step in [0.25, 0.50, 0.75]:
-                pt_inter = p1 + step * (p2 - p1)
-                vertices.append(pt_inter.tolist())
+            vertices.append(list(box[i]))
                 
         self.vertices = vertices
         self.initial_vertices = [list(pt) for pt in vertices]
@@ -692,6 +685,166 @@ class Interactive4CornerSelector:
             return None
 
 
+class InteractiveHomographyGridEditor(Interactive4CornerSelector):
+    """
+    Editor que permite manipular APENAS os 4 cantos de uma malha xadrez, 
+    calculando e exibindo a projeção de todos os pontos internos via Homografia em tempo real.
+    """
+    def __init__(self, image, window_title="Ajuste Fino da Malha via Homografia", help_instructions=None, labels=None, initial_corners=None, pattern_size=(14, 10)):
+        super().__init__(image, window_title, help_instructions, labels, initial_corners)
+        self.cols, self.rows = pattern_size
+        
+        # Pre-compute ideal grid for homography
+        ideal_grid = []
+        for r in range(self.rows):
+            for c in range(self.cols):
+                ideal_grid.append([c, r])
+        self.ideal_grid = np.array(ideal_grid, dtype=np.float32).reshape(-1, 1, 2)
+        self.ideal_corners = np.float32([
+            [0, 0],
+            [self.cols - 1, 0],
+            [self.cols - 1, self.rows - 1],
+            [0, self.rows - 1]
+        ])
+
+    def run(self):
+        cv2.namedWindow(self.window_title, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
+        cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
+        cv2.waitKey(100)
+        cv2.setMouseCallback(
+            self.window_title,
+            lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
+        )
+        
+        while True:
+            try:
+                rect = cv2.getWindowImageRect(self.window_title)
+                if rect is not None and len(rect) == 4 and rect[2] > 0 and rect[3] > 0:
+                    w, h = rect[2], rect[3]
+                else:
+                    w, h = self.window_width, self.window_height
+            except Exception:
+                w, h = self.window_width, self.window_height
+
+            M = np.float32([[self.s, 0, self.tx], [0, self.s, self.ty]])
+            view = cv2.warpAffine(
+                self.img, M, (w, h),
+                borderMode=cv2.BORDER_CONSTANT, borderValue=(30, 30, 30)
+            )
+            
+            # --- COMPUTE HOMOGRAPHY AND PROJECT GRID EM TEMPO REAL ---
+            current_corners = np.array(self.vertices, dtype=np.float32)
+            H, _ = cv2.findHomography(self.ideal_corners, current_corners)
+            
+            if H is not None:
+                projected_grid = cv2.perspectiveTransform(self.ideal_grid, H).reshape(-1, 2)
+                
+                # Desenhar as conexões da malha interna projetada
+                screen_grid = [self.to_screen(pt) for pt in projected_grid]
+                
+                # Desenhar linhas e colunas internas sutis
+                for r in range(self.rows):
+                    for c in range(self.cols):
+                        idx = r * self.cols + c
+                        pt_curr = screen_grid[idx]
+                        
+                        # Conectar à direita
+                        if c < self.cols - 1:
+                            idx_r = r * self.cols + (c + 1)
+                            cv2.line(view, pt_curr, screen_grid[idx_r], (200, 200, 100), 1, cv2.LINE_AA)
+                            
+                        # Conectar abaixo
+                        if r < self.rows - 1:
+                            idx_d = (r + 1) * self.cols + c
+                            cv2.line(view, pt_curr, screen_grid[idx_d], (200, 200, 100), 1, cv2.LINE_AA)
+            
+            # Desenhar as arestas conectando os 4 cantos em destaque
+            screen_pts = [self.to_screen(pt) for pt in self.vertices]
+            for i in range(4):
+                pt1 = screen_pts[i]
+                pt2 = screen_pts[(i + 1) % 4]
+                cv2.line(view, pt1, pt2, (80, 220, 80), 2, cv2.LINE_AA)
+                
+            # Desenhar os vértices com labels correspondentes (as 4 quinas)
+            for i, pt in enumerate(screen_pts):
+                if i == self.selected_idx:
+                    color = (50, 100, 255)
+                    radius = self.vertex_radius + 4
+                elif i == self.hovered_idx:
+                    color = (50, 255, 255)
+                    radius = self.vertex_radius + 2
+                else:
+                    color = (240, 150, 50)
+                    radius = self.vertex_radius
+                    
+                cv2.circle(view, pt, radius, color, -1, cv2.LINE_AA)
+                cv2.circle(view, pt, radius + 1, (255, 255, 255), 1, cv2.LINE_AA)
+                
+                # Exibir texto identificando o canto
+                if i < len(self.labels):
+                    cv2.putText(view, self.labels[i], (pt[0] + 12, pt[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (240, 240, 240), 1, cv2.LINE_AA)
+                
+            # Desenhar painel de ajuda
+            overlay_help = view.copy()
+            cv2.rectangle(overlay_help, (10, 10), (w - 10, 80), (15, 15, 15), -1)
+            cv2.addWeighted(overlay_help, 0.75, view, 0.25, 0, view)
+            
+            status_contrast = "Ativo" if self.show_enhanced else "Inativo"
+            if self.base_help_instructions is None:
+                instructions = [
+                    f"Ajuste Fino ({self.cols}x{self.rows}): Arraste as quinas  |  Realce [C]: {status_contrast}",
+                    "Mover Canto: Click esquerdo + arrastar  |  Zoom: Scroll Mouse  |  Camera: Click direito + arrastar",
+                    "Confirmar: [Enter] / [Espaco]               |  Resetar Cantos: [R]  |  Cancelar: [Esc] / [Q]"
+                ]
+            else:
+                instructions = list(self.base_help_instructions)
+                if len(instructions) >= 2:
+                    instructions[0] = instructions[0] + f"  |  Realce [C]: {status_contrast}"
+            
+            for i, text in enumerate(instructions):
+                cv2.putText(view, text, (20, 30 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (240, 240, 240), 1, cv2.LINE_AA)
+                
+            cv2.imshow(self.window_title, view)
+            
+            key = cv2.waitKey(15)
+            if key == -1:
+                continue
+                
+            val = key & 0xFF
+            
+            if val in [13, 32]:
+                self.confirmed = True
+                break
+            elif val in [27, ord('q'), ord('Q')]:
+                self.confirmed = False
+                break
+                
+            # 'c'/'C' para alternar realce de contraste
+            elif val in [ord('c'), ord('C')]:
+                self.show_enhanced = not self.show_enhanced
+                self.img = self.img_enhanced if self.show_enhanced else self.img_original
+            elif val in [ord('r'), ord('R')]:
+                self.vertices = [list(pt) for pt in self.initial_vertices]
+                self.selected_idx = None
+                self.s = self.default_s
+                self.tx = self.default_tx
+                self.ty = self.default_ty
+                
+        cv2.destroyWindow(self.window_title)
+        
+        if self.confirmed:
+            current_corners = np.array(self.vertices, dtype=np.float32)
+            H, _ = cv2.findHomography(self.ideal_corners, current_corners)
+            if H is not None:
+                projected_grid = cv2.perspectiveTransform(self.ideal_grid, H).reshape(-1, 2)
+                return projected_grid
+            else:
+                return None
+        else:
+            return None
+
+
 # MDF calibrator removed in favor of coplanar calibration block
 
 
@@ -976,13 +1129,48 @@ def select_checkerboard_corners_manually(image, window_title="Calibracao Manual 
 
 def fine_tune_checkerboard_grid(image, points, pattern_size=(14, 10), window_title="Validacao da Malha do Checkerboard", cache_key=None):
     """
-    Interface publica para acionar o editor interativo de 140 pontos para o ajuste fino do checkerboard.
-    Possui cache para evitar multiplas confirmacoes do mesmo background.
+    Interface publica para acionar o editor interativo da malha do checkerboard.
+    Ao invés de editar ponto a ponto, o usuário agora manipula apenas as 4 quinas
+    da grade enquanto visualiza em tempo real a deformação da malha interpolada por Homografia.
     """
     try:
-        editor = InteractiveCheckerboardGridEditor(image, points, pattern_size, window_title)
-        points, adjusted = editor.run()
-        return points, adjusted
+        cols, rows = pattern_size
+        pts_2d = points.reshape(rows, cols, 2)
+        
+        # Extrair os 4 cantos extremos da grade recebida em `points`
+        initial_4_corners = np.array([
+            pts_2d[0, 0],               # Top-Left
+            pts_2d[0, cols - 1],        # Top-Right
+            pts_2d[rows - 1, cols - 1], # Bottom-Right
+            pts_2d[rows - 1, 0]         # Bottom-Left
+        ], dtype=np.float32)
+        
+        help_instructions = [
+            f"Ajuste da Malha ({cols}x{rows}): Arraste APENAS as 4 quinas para alinhar as linhas",
+            "Mover Quina: Click esquerdo + arrastar  |  Zoom: Scroll Mouse  |  Camera: Click direito + arrastar",
+            "Confirmar malha inteira: [Enter] / [Espaco]   |  Resetar: [R]  |  Cancelar: [Esc] / [Q]"
+        ]
+        labels = [
+            "TL (Superior-Esq Interno)",
+            "TR (Superior-Dir Interno)",
+            "BR (Inferior-Dir Interno)",
+            "BL (Inferior-Esq Interno)"
+        ]
+        
+        editor = InteractiveHomographyGridEditor(
+            image,
+            window_title=window_title,
+            help_instructions=help_instructions,
+            labels=labels,
+            initial_corners=initial_4_corners.tolist(),
+            pattern_size=pattern_size
+        )
+        final_points = editor.run()
+        
+        if final_points is not None:
+            return final_points, True
+        else:
+            return points, False
     except Exception as e:
         logger.error(f"Erro no ajuste fino dos pontos da grade do checkerboard: {e}. Mantendo originais.")
         return points, False

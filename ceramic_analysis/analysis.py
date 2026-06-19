@@ -521,27 +521,27 @@ def annotate_image(
                     # Edge de comprimento (Length)
                     if not drawn_length:
                         if "cross_length_10pct_mm" in metrics:
-                            l10 = metrics["cross_length_10pct_mm"]
-                            l50 = metrics["cross_length_50pct_mm"]
-                            l90 = metrics["cross_length_90pct_mm"]
-                            _draw_segment_cota(annotated, p1, p2, center_pt, l10, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{l10:.1f} mm", offset_multiplier=1.0, text_shift_index=-1)
-                            _draw_segment_cota(annotated, p1, p2, center_pt, l50, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{l50:.1f} mm", offset_multiplier=2.5, text_shift_index=0)
-                            _draw_segment_cota(annotated, p1, p2, center_pt, l90, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{l90:.1f} mm", offset_multiplier=4.0, text_shift_index=1)
+                            texts = [
+                                f"{metrics['cross_length_10pct_mm']:.1f} mm",
+                                f"{metrics['cross_length_50pct_mm']:.1f} mm",
+                                f"{metrics['cross_length_90pct_mm']:.1f} mm"
+                            ]
+                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
                         else:
-                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=1.0)
+                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
                         drawn_length = True
                 else:
                     # Edge de largura (Width)
                     if not drawn_width:
                         if "cross_width_10pct_mm" in metrics:
-                            w10 = metrics["cross_width_10pct_mm"]
-                            w50 = metrics["cross_width_50pct_mm"]
-                            w90 = metrics["cross_width_90pct_mm"]
-                            _draw_segment_cota(annotated, p1, p2, center_pt, w10, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{w10:.1f} mm", offset_multiplier=1.0, text_shift_index=-1)
-                            _draw_segment_cota(annotated, p1, p2, center_pt, w50, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{w50:.1f} mm", offset_multiplier=2.5, text_shift_index=0)
-                            _draw_segment_cota(annotated, p1, p2, center_pt, w90, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_text=f"{w90:.1f} mm", offset_multiplier=4.0, text_shift_index=1)
+                            texts = [
+                                f"{metrics['cross_width_10pct_mm']:.1f} mm",
+                                f"{metrics['cross_width_50pct_mm']:.1f} mm",
+                                f"{metrics['cross_width_90pct_mm']:.1f} mm"
+                            ]
+                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
                         else:
-                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=1.0)
+                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
                         drawn_width = True
         elif "bbox_x" in metrics and "bbox_y" in metrics and "bbox_w" in metrics and "bbox_h" in metrics:
             x, y = metrics["bbox_x"], metrics["bbox_y"]
@@ -628,26 +628,54 @@ def annotate_image(
 
 
 def _draw_text_with_bg(
-    img, text, position, font_scale, color, bg_color, thickness, center=False
+    img, text, position, font_scale, color, bg_color, thickness, center=False, angle=0
 ):
     """Desenha texto com fundo semi-transparente para legibilidade."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
-    x, y = position
-    if center:
-        x = x - tw // 2
-        y = y + th // 2
+    pad_x = 4
+    pad_y_top = 5
+    pad_y_bottom = baseline + 2
+    
+    box_w = tw + 2 * pad_x
+    box_h = th + pad_y_top + pad_y_bottom
 
-    # Retângulo de fundo
-    cv2.rectangle(
-        img,
-        (x - 4, y - th - 5),
-        (x + tw + 4, y + baseline + 2),
-        bg_color, -1
-    )
-    # Texto
-    cv2.putText(img, text, (x, y), font, font_scale, color, thickness)
+    if angle == 90:
+        temp_img = np.full((box_h, box_w, 3), bg_color, dtype=np.uint8)
+        cv2.putText(temp_img, text, (pad_x, th + pad_y_top), font, font_scale, color, thickness)
+        rotated = cv2.rotate(temp_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        rot_h, rot_w = rotated.shape[:2]
+        
+        px, py = position
+        if center:
+            start_x = int(px - rot_w // 2)
+            start_y = int(py - rot_h // 2)
+        else:
+            start_x = int(px)
+            start_y = int(py - rot_h)
+            
+        end_x = start_x + rot_w
+        end_y = start_y + rot_h
+        
+        img_h, img_w = img.shape[:2]
+        if start_y >= 0 and start_x >= 0 and end_y <= img_h and end_x <= img_w:
+            img[start_y:end_y, start_x:end_x] = rotated
+    else:
+        x, y = position
+        if center:
+            x = x - tw // 2
+            y = y + th // 2
+
+        # Retângulo de fundo
+        cv2.rectangle(
+            img,
+            (x - pad_x, y - th - pad_y_top),
+            (x + tw + pad_x, y + pad_y_bottom),
+            bg_color, -1
+        )
+        # Texto
+        cv2.putText(img, text, (x, y), font, font_scale, color, thickness)
 
 def _draw_dashed_line(img, p1, p2, color, thickness, dash_length=10, gap_length=6):
     """Desenha uma linha tracejada entre p1 e p2."""
@@ -677,7 +705,9 @@ def _draw_dashed_line(img, p1, p2, color, thickness, dash_length=10, gap_length=
         drawing = not drawing
 
 
-def _draw_segment_cota(img, p1, p2, center_pt, len_mm, font_scale, color_cota, color_text, color_bg, thickness, custom_text=None, offset_multiplier=1.0, text_shift_index=0):
+def _draw_segment_cota(
+    img, p1, p2, center_pt, len_mm, font_scale, color_cota, color_text, color_bg, thickness, custom_texts=None, offset_multiplier=1.0
+):
     """
     Desenha uma cota de engenharia paralela a um segmento (aresta do min_rect).
     """
@@ -741,29 +771,42 @@ def _draw_segment_cota(img, p1, p2, center_pt, len_mm, font_scale, color_cota, c
     t2_p2 = p2_cota - t1 * tick_size
     cv2.line(img, (int(round(t2_p1[0])), int(round(t2_p1[1]))), (int(round(t2_p2[0])), int(round(t2_p2[1]))), color_cota, 2, cv2.LINE_AA)
     
-    # Texto centralizado no vetor offset (acima da linha principal)
-    text = custom_text if custom_text else f"{len_mm:.2f} mm"
+    text_angle = 90 if abs(u[0]) > abs(u[1]) else 0
     
-    # Calcular tamanho do texto para escalonamento
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_size, _ = cv2.getTextSize(text, font, font_scale * 0.7, max(1, thickness - 1))
-    tw, th = text_size
-    
-    text_shift_vec = np.array([0.0, 0.0])
-    # Se a aresta for mais vertical do que horizontal, u[1] domina.
-    # Precisamos escalonar o texto ao longo da aresta (u) para evitar sobreposição horizontal.
-    if abs(u[1]) > abs(u[0]) and text_shift_index != 0:
-        shift_amount = text_shift_index * (th * 2.5)
-        text_shift_vec = u * shift_amount
+    if custom_texts and isinstance(custom_texts, list) and len(custom_texts) == 3:
+        fractions = [0.10, 0.50, 0.90]
+        for i, (frac, text_val) in enumerate(zip(fractions, custom_texts)):
+            # Posicionamento das três medidas (10%, 50%, 90%)
+            pt_along_edge = p1 + frac * (p2 - p1)
+            pt_on_cota = p1_cota + frac * (p2_cota - p1_cota)
+            
+            # Tick mark intermediário
+            tick_p1 = pt_on_cota + t1 * tick_size
+            tick_p2 = pt_on_cota - t1 * tick_size
+            cv2.line(img, (int(round(tick_p1[0])), int(round(tick_p1[1]))), (int(round(tick_p2[0])), int(round(tick_p2[1]))), color_cota, 2, cv2.LINE_AA)
+            
+            # Linha de extensão intermediária muito suave (opcional)
+            cv2.line(img, (int(round(pt_along_edge[0])), int(round(pt_along_edge[1]))), (int(round(pt_on_cota[0])), int(round(pt_on_cota[1]))), color_cota, 1, cv2.LINE_AA)
+            
+            # Posicionamento do texto
+            text_base_pos = pt_on_cota + n * (int(20 * font_scale) if text_angle == 90 else int(12 * font_scale))
+            text_pos_i = (int(round(text_base_pos[0])), int(round(text_base_pos[1])))
+            
+            _draw_text_with_bg(
+                img, text_val, text_pos_i,
+                font_scale * 0.7, color_text, color_bg, max(1, thickness - 1),
+                center=True, angle=text_angle
+            )
+    else:
+        text_val = custom_texts if isinstance(custom_texts, str) else f"{len_mm:.2f} mm"
+        text_pos = mid + n * (int(20 * font_scale) if text_angle == 90 else int(12 * font_scale))
+        text_pos_i = (int(round(text_pos[0])), int(round(text_pos[1])))
         
-    text_pos = mid + n * (offset_px + int(12 * font_scale)) + text_shift_vec
-    text_pos_i = (int(round(text_pos[0])), int(round(text_pos[1])))
-    
-    _draw_text_with_bg(
-        img, text, text_pos_i,
-        font_scale * 0.7, color_text, color_bg, max(1, thickness - 1),
-        center=True
-    )
+        _draw_text_with_bg(
+            img, text_val, text_pos_i,
+            font_scale * 0.7, color_text, color_bg, max(1, thickness - 1),
+            center=True, angle=text_angle
+        )
 
 
 def annotate_batch(
