@@ -365,12 +365,28 @@ def cmd_process(args):
                             "view_mode": view
                         }
 
-                    # 2. Segmentação
+                    # 2. Coleta de seed points (peça + MDF) para segmentação
+                    seed_point = None
+                    mdf_point = None
+                    if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
+                        logger.info(f"  [Seed] Solicitando identificação da peça e fundo...")
+                        seed_point, mdf_point = interactive.get_seed_points(
+                            color,
+                            window_title=f"Identificar Peca e Fundo - {img_path.name}"
+                        )
+                        if seed_point is not None and mdf_point is not None:
+                            logger.info(f"  [Seed] Peça=({seed_point[0]},{seed_point[1]}), MDF=({mdf_point[0]},{mdf_point[1]})")
+                        else:
+                            logger.warning("  [Seed] Seed points não fornecidos. Segmentação sem seeds.")
+
+                    # 3. Segmentação
                     seg_results = segmentation.segment(
                         gray, color, img_path.stem,
                         background=background,
                         strategy=args.strategy,
-                        calibration_corners=corners
+                        calibration_corners=corners,
+                        seed_point=seed_point,
+                        mdf_point=mdf_point
                     )
 
                     # Ajuste manual interativo do contorno principal
@@ -899,7 +915,7 @@ Exemplos:
     )
     p_proc.add_argument(
         "--strategy",
-        choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
+        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
         default="auto",
         help="Estratégia de segmentação (default: auto)"
     )
@@ -926,7 +942,7 @@ Exemplos:
     p_full.add_argument("--state", choices=["wet", "dry", "both"], default="both")
     p_full.add_argument(
         "--strategy",
-        choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
+        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
         default="auto"
     )
 # --perspective-correction removed
@@ -954,7 +970,7 @@ Exemplos:
     p_cad.add_argument("--state", choices=["wet", "dry", "both"], default="both")
     p_cad.add_argument(
         "--strategy",
-        choices=["background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
+        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
         default="auto"
     )
 # --perspective-correction removed

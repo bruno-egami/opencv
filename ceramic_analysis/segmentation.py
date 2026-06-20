@@ -186,50 +186,72 @@ def segment_lab_b(image_color: np.ndarray) -> np.ndarray:
 
 
 
-def segment_otsu(gray_blurred: np.ndarray) -> np.ndarray:
+def segment_otsu(gray_blurred: np.ndarray, piece_is_lighter: bool = False) -> np.ndarray:
     """
     Segmentação por threshold automático de Otsu.
 
     Calcula o limiar ótimo que minimiza a variância intra-classe,
     assumindo uma distribuição bimodal (pico do fundo + pico do objeto).
 
-    Funciona melhor com alto contraste (ex: caulim branco sobre MDF).
-
-    THRESH_BINARY_INV: objeto escuro → branco na máscara.
-    Se a peça for mais clara que o fundo, o pós-processamento inverte.
+    A polaridade (BINARY vs BINARY_INV) é determinada automaticamente:
+    - piece_is_lighter=True  → peça clara (caulim) → THRESH_BINARY
+    - piece_is_lighter=False → peça escura (marrom) → THRESH_BINARY_INV
 
     Args:
         gray_blurred: Imagem em escala de cinza com filtro gaussiano (uint8).
+        piece_is_lighter: Se True, a peça é mais clara que o fundo.
 
     Returns:
         Máscara binária (uint8).
     """
-    if config.MANUAL_THRESHOLD is not None:
-        # Override manual — útil para ajuste fino em condições específicas
-        thresh_val = config.MANUAL_THRESHOLD
-        _, mask = cv2.threshold(gray_blurred, thresh_val, 255,
-                                cv2.THRESH_BINARY_INV)
-        logger.debug(f"  Threshold manual: {thresh_val}")
+    if piece_is_lighter:
+        thresh_type = cv2.THRESH_BINARY
+        polarity_label = "BINARY (peça clara)"
     else:
-        thresh_val, mask = cv2.threshold(gray_blurred, 0, 255,
-                                         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        logger.debug(f"  Threshold Otsu automático: {thresh_val}")
+        thresh_type = cv2.THRESH_BINARY_INV
+        polarity_label = "BINARY_INV (peça escura)"
+
+    if config.MANUAL_THRESHOLD is not None:
+        thresh_val = config.MANUAL_THRESHOLD
+        
+        # Blur forte local para evitar bordas serrilhadas e ruído do MDF
+        heavy_blur = cv2.GaussianBlur(gray_blurred, (31, 31), 0)
+        _, mask = cv2.threshold(heavy_blur, thresh_val, 255, thresh_type)
+        logger.debug(f"  Threshold manual: {thresh_val} ({polarity_label})")
+    else:
+        # Blur forte local para evitar bordas serrilhadas e ruído do MDF
+        heavy_blur = cv2.GaussianBlur(gray_blurred, (31, 31), 0)
+        thresh_val, mask = cv2.threshold(heavy_blur, 0, 255,
+                                         thresh_type + cv2.THRESH_OTSU)
+        logger.debug(f"  Threshold Otsu automático: {thresh_val} ({polarity_label})")
 
     return mask
 
 
-def segment_otsu_dark(gray_blurred: np.ndarray) -> np.ndarray:
+def segment_otsu_dark(gray_blurred: np.ndarray, piece_is_lighter: bool = False) -> np.ndarray:
     """
     Segmentação por Otsu considerando apenas pixels escuros (< 160).
     Exclui pixels muito claros da calibração (bloco branco/grade) para
     evitar que enviesem o limiar de Otsu.
+    
+    A polaridade é determinada pelo parâmetro piece_is_lighter.
     """
+    if piece_is_lighter:
+        thresh_type = cv2.THRESH_BINARY
+        polarity_label = "BINARY (peça clara)"
+    else:
+        thresh_type = cv2.THRESH_BINARY_INV
+        polarity_label = "BINARY_INV (peça escura)"
+
+    # Blur forte local para evitar bordas serrilhadas e ruído do MDF
+    heavy_blur = cv2.GaussianBlur(gray_blurred, (31, 31), 0)
+
     # Selecionar pixels < 160
-    pixels = gray_blurred[gray_blurred < 160]
+    pixels = heavy_blur[heavy_blur < 160]
     
     if len(pixels) == 0:
         # Fallback para Otsu padrão se não houver pixels escuros
-        _, mask = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        _, mask = cv2.threshold(heavy_blur, 0, 255, thresh_type + cv2.THRESH_OTSU)
         return mask
         
     # Calcular histograma para pixels < 160 (limite 160)
@@ -244,7 +266,7 @@ def segment_otsu_dark(gray_blurred: np.ndarray) -> np.ndarray:
     sum_b = 0.0
     w_b = 0.0
     
-    for t in range(160):  # Apenas até 160, pois os outros bins são 0
+    for t in range(160):
         w_b += hist[t]
         if w_b == 0:
             continue
@@ -256,17 +278,15 @@ def segment_otsu_dark(gray_blurred: np.ndarray) -> np.ndarray:
         m_b = sum_b / w_b
         m_f = (sum_total - sum_b) / w_f
         
-        # Variância entre classes
         var_between = w_b * w_f * ((m_b - m_f) ** 2)
         
         if var_between > current_max:
             current_max = var_between
             thresh_val = t
             
-    logger.debug(f"  Otsu Dark: limiar calculado = {thresh_val}")
+    logger.debug(f"  Otsu Dark: limiar calculado = {thresh_val} ({polarity_label})")
     
-    # Binarizar a imagem usando o limiar encontrado
-    _, mask = cv2.threshold(gray_blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
+    _, mask = cv2.threshold(heavy_blur, thresh_val, 255, thresh_type)
     return mask
 
 
@@ -291,6 +311,130 @@ def segment_adaptive(gray_blurred: np.ndarray) -> np.ndarray:
         config.ADAPTIVE_BLOCK_SIZE,  # Tamanho do bloco (ímpar)
         config.ADAPTIVE_C            # Constante subtraída da média
     )
+    return mask
+
+
+def segment_grabcut_seeded(
+    image_color: np.ndarray,
+    seed_point: tuple,
+    mdf_point: tuple,
+    iterations: int = 5,
+    max_dim: int = 1000,
+    calibration_corners: np.ndarray = None
+) -> np.ndarray:
+    """
+    Segmentação via GrabCut inicializado com pontos-semente do usuário.
+    
+    Para performance, a imagem é redimensionada para max_dim pixels na maior
+    dimensão antes do GrabCut, e a máscara resultante é escalada de volta.
+    
+    Inicialização da máscara:
+    1. Tudo como GC_PR_BGD (provável background)
+    2. Borda de 10% como GC_BGD (background definitivo)
+    3. Região ampla ao redor do seed_point como GC_PR_FGD
+    4. Núcleo do seed_point como GC_FGD (foreground definitivo)
+    5. Região do mdf_point como GC_BGD
+    
+    Args:
+        image_color: Imagem BGR (uint8).
+        seed_point: (x, y) ponto dentro da peça (foreground).
+        mdf_point: (x, y) ponto no MDF (background).
+        iterations: Número de iterações do GrabCut.
+        max_dim: Dimensão máxima da imagem redimensionada para GrabCut.
+        
+    Returns:
+        Máscara binária (uint8): 255 = objeto, 0 = fundo.
+    """
+    h_orig, w_orig = image_color.shape[:2]
+    
+    # Calcular fator de escala para redimensionamento
+    scale = min(max_dim / max(h_orig, w_orig), 1.0)
+    
+    if scale < 1.0:
+        w_small = int(w_orig * scale)
+        h_small = int(h_orig * scale)
+        img_small = cv2.resize(image_color, (w_small, h_small), interpolation=cv2.INTER_AREA)
+        # Escalar seed points
+        sp = (int(seed_point[0] * scale), int(seed_point[1] * scale))
+        mp = (int(mdf_point[0] * scale), int(mdf_point[1] * scale))
+        logger.debug(f"  GrabCut: redimensionando {w_orig}x{h_orig} → {w_small}x{h_small} (scale={scale:.3f})")
+    else:
+        img_small = image_color
+        w_small, h_small = w_orig, h_orig
+        sp = seed_point
+        mp = mdf_point
+    
+    # Inicializar máscara: tudo como provável background
+    gc_mask = np.full((h_small, w_small), cv2.GC_PR_BGD, dtype=np.uint8)
+    
+    # Marcar borda de 10% como background definitivo (a peça não está na borda)
+    border_y = max(5, int(h_small * 0.10))
+    border_x = max(5, int(w_small * 0.10))
+    gc_mask[:border_y, :] = cv2.GC_BGD          # Topo
+    gc_mask[h_small - border_y:, :] = cv2.GC_BGD  # Base
+    gc_mask[:, :border_x] = cv2.GC_BGD            # Esquerda
+    gc_mask[:, w_small - border_x:] = cv2.GC_BGD  # Direita
+    
+    # Raio para as sementes — proporcional à imagem redimensionada
+    seed_radius = max(8, int(min(h_small, w_small) * 0.02))
+    
+    # Marcar região ampla ao redor do seed como provável foreground
+    fgd_radius = max(seed_radius * 5, int(min(h_small, w_small) * 0.12))
+    cv2.circle(gc_mask, sp, fgd_radius, cv2.GC_PR_FGD, -1)
+    
+    # Marcar núcleo do seed_point como foreground definitivo
+    cv2.circle(gc_mask, sp, seed_radius, cv2.GC_FGD, -1)
+    
+    # Marcar região do mdf_point como background definitivo
+    cv2.circle(gc_mask, mp, seed_radius * 2, cv2.GC_BGD, -1)
+    
+    # Marcar região do bloco de calibração como background definitivo
+    if calibration_corners is not None:
+        try:
+            hull = cv2.convexHull(calibration_corners.astype(np.int32))
+            if scale < 1.0:
+                hull = (hull * scale).astype(np.int32)
+            
+            calib_mask = np.zeros_like(gc_mask)
+            cv2.drawContours(calib_mask, [hull], -1, 255, -1)
+            
+            # Dilatar para cobrir a borda branca (aprox 3mm)
+            x, y, w, h = cv2.boundingRect(hull)
+            square_size = max(w / 7.0, h / 6.0)
+            dilation = int(np.ceil(3.0 * (square_size / 6.0))) + int(10 * scale)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*dilation+1, 2*dilation+1))
+            calib_mask_dilated = cv2.dilate(calib_mask, kernel)
+            
+            gc_mask[calib_mask_dilated == 255] = cv2.GC_BGD
+            logger.debug("  GrabCut: Bloco de calibração marcado como GC_BGD.")
+        except Exception as e:
+            logger.warning(f"  GrabCut: Erro ao mascarar bloco calibração: {e}")
+    
+    # Modelos GMM para foreground e background
+    bgd_model = np.zeros((1, 65), dtype=np.float64)
+    fgd_model = np.zeros((1, 65), dtype=np.float64)
+    
+    # Executar GrabCut
+    logger.debug(f"  GrabCut: seed={sp}, mdf={mp}, iter={iterations}, img={w_small}x{h_small}")
+    cv2.grabCut(
+        img_small, gc_mask, None,
+        bgd_model, fgd_model,
+        iterations,
+        cv2.GC_INIT_WITH_MASK
+    )
+    
+    # Converter resultado: FGD e PR_FGD → 255, resto → 0
+    mask_small = np.where(
+        (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD),
+        255, 0
+    ).astype(np.uint8)
+    
+    # Escalar máscara de volta para resolução original
+    if scale < 1.0:
+        mask = cv2.resize(mask_small, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+    else:
+        mask = mask_small
+    
     return mask
 
 
@@ -367,28 +511,27 @@ def evaluate_mask_quality(mask: np.ndarray) -> dict:
 
 def postprocess_mask(mask: np.ndarray) -> np.ndarray:
     """
-    Aplica fechamento morfológico para eliminar lacunas nas bordas.
+    Aplica fechamento morfológico para eliminar lacunas nas bordas, e
+    abertura morfológica para raspar pequenas oscilações/rebarbas físicas.
 
-    Usa kernel elíptico (bordas mais naturais que retangular) com
-    MORPH_CLOSE = dilatação seguida de erosão.
-
-    Isso fecha pequenas lacunas causadas por reflexos na superfície
-    da argila úmida, sem alterar significativamente o tamanho do contorno.
-
-    Args:
-        mask: Máscara binária (uint8).
-
-    Returns:
-        Máscara binária pós-processada.
+    Isso fecha pequenas lacunas causadas por reflexos, e remove
+    pequenos inchaços na borda para que a Bounding Box cole perfeitamente
+    na linha reta principal da peça.
     """
-    kernel = cv2.getStructuringElement(
+    kernel_close = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, config.MORPH_KERNEL_SIZE
     )
     closed = cv2.morphologyEx(
-        mask, cv2.MORPH_CLOSE, kernel,
+        mask, cv2.MORPH_CLOSE, kernel_close,
         iterations=config.MORPH_ITERATIONS
     )
-    return closed
+    
+    # "Oscillation/Burr Shaver": kernel grande (ex: 201x201) com MORPH_OPEN (Erode -> Dilate)
+    # Raspa as pequenas "barrigas" e "dentes" físicos que sobraram na borda da argila
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (201, 201))
+    opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open)
+    
+    return opened
 
 
 def extract_contour_metrics(contour: np.ndarray) -> dict:
@@ -796,7 +939,8 @@ def refine_contour_with_edges(contour, gray, margin=30, mode="close") -> tuple:
 def _preprocess_mdf_background(
     gray_blurred: np.ndarray,
     image_color: np.ndarray,
-    calibration_corners: np.ndarray = None
+    calibration_corners: np.ndarray = None,
+    seed_point: tuple = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Detecta fundo de mesa branco ao redor da placa MDF e remove a borda queimada a laser.
@@ -854,6 +998,11 @@ def _preprocess_mdf_background(
 
     # Detectar o fundo branco da mesa
     _, thresh = cv2.threshold(gray_blurred, 210, 255, cv2.THRESH_BINARY)
+    
+    # Proteger região ao redor do seed_point (evita mascarar peças claras como caulim)
+    if seed_point is not None:
+        protection_radius = max(50, int(min(gray_blurred.shape[:2]) * 0.15))
+        cv2.circle(thresh, seed_point, protection_radius, 0, -1)
     
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -915,7 +1064,9 @@ def segment(
     strategy: str = None,
     save_mask: bool = True,
     masks_dir: str = None,
-    calibration_corners: np.ndarray = None
+    calibration_corners: np.ndarray = None,
+    seed_point: tuple = None,
+    mdf_point: tuple = None
 ) -> list:
     """
     Segmenta o corpo de prova na imagem e extrai métricas geométricas.
@@ -945,7 +1096,35 @@ def segment(
     logger.info(f"  Segmentando '{image_name}' (estratégia: {strategy})")
 
     # Pré-processamento: isolar MDF e limpar o fundo / borda queimada a laser / bloco calib
-    gray_blurred, image_color = _preprocess_mdf_background(gray_blurred, image_color, calibration_corners)
+    gray_blurred, image_color = _preprocess_mdf_background(gray_blurred, image_color, calibration_corners, seed_point)
+
+    # Determinar se a peça é mais clara que o fundo usando os seed points
+    piece_is_lighter = False
+    if seed_point is not None and mdf_point is not None:
+        gray_for_brightness = cv2.cvtColor(image_color, cv2.COLOR_BGR2GRAY) if len(image_color.shape) == 3 else gray_blurred
+        # Amostrar patch 31x31 ao redor de cada ponto
+        patch_r = 15
+        h_img, w_img = gray_for_brightness.shape[:2]
+        
+        px, py = seed_point
+        y1p = max(0, py - patch_r)
+        y2p = min(h_img, py + patch_r + 1)
+        x1p = max(0, px - patch_r)
+        x2p = min(w_img, px + patch_r + 1)
+        piece_brightness = float(np.mean(gray_for_brightness[y1p:y2p, x1p:x2p]))
+        
+        mx, my = mdf_point
+        y1m = max(0, my - patch_r)
+        y2m = min(h_img, my + patch_r + 1)
+        x1m = max(0, mx - patch_r)
+        x2m = min(w_img, mx + patch_r + 1)
+        mdf_brightness = float(np.mean(gray_for_brightness[y1m:y2m, x1m:x2m]))
+        
+        piece_is_lighter = piece_brightness > mdf_brightness
+        logger.info(
+            f"  [Seed] Luminância peça={piece_brightness:.1f}, MDF={mdf_brightness:.1f} "
+            f"→ peça {'MAIS CLARA' if piece_is_lighter else 'MAIS ESCURA'} que o fundo"
+        )
 
     mask = None
 
@@ -953,10 +1132,16 @@ def segment(
         # Tentar cada estratégia na ordem de preferência
         strategies_to_try = []
 
-        strategies_to_try.append(("yellow", None))
-        strategies_to_try.append(("lab_b", None))
+        if seed_point is not None and mdf_point is not None:
+            # Watershed resolve maravilhosamente bem o problema de peças com sombras
+            # e núcleos com cor idêntica ao fundo, baseando-se em gradientes.
+            strategies_to_try.append(("watershed_seeded", None))
+
         if background is not None:
             strategies_to_try.append(("background_sub", background))
+        
+        # Agora que temos piece_is_lighter determinado por sementes dinâmicas,
+        # otsu_dark / otsu se tornam extremamente robustos para qualquer cor (clara ou escura)
         strategies_to_try.append(("otsu_dark", None))
         strategies_to_try.append(("lab", None))
         strategies_to_try.append(("otsu", None))
@@ -965,7 +1150,11 @@ def segment(
             logger.debug(f"  Auto: tentando '{strat_name}'...")
             try:
                 candidate_mask = _apply_strategy(
-                    strat_name, gray_blurred, image_color, bg
+                    strat_name, gray_blurred, image_color, bg,
+                    piece_is_lighter=piece_is_lighter,
+                    seed_point=seed_point,
+                    mdf_point=mdf_point,
+                    calibration_corners=calibration_corners
                 )
                 candidate_mask = check_and_correct_inversion(candidate_mask)
                 candidate_mask = postprocess_mask(candidate_mask)
@@ -991,7 +1180,13 @@ def segment(
 
     else:
         # Estratégia específica
-        mask = _apply_strategy(strategy, gray_blurred, image_color, background)
+        mask = _apply_strategy(
+            strategy, gray_blurred, image_color, background,
+            piece_is_lighter=piece_is_lighter,
+            seed_point=seed_point,
+            mdf_point=mdf_point,
+            calibration_corners=calibration_corners
+        )
         mask = check_and_correct_inversion(mask)
         mask = postprocess_mask(mask)
 
@@ -1041,12 +1236,28 @@ def segment(
             refined_contours.append(c)
     valid_contours = refined_contours
 
+    # Filtrar contornos pelo seed_point: se disponível, priorizar o que contém o seed
+    if seed_point is not None and len(valid_contours) > 1:
+        containing = []
+        not_containing = []
+        for c in valid_contours:
+            if cv2.pointPolygonTest(c, (float(seed_point[0]), float(seed_point[1])), False) >= 0:
+                containing.append(c)
+            else:
+                not_containing.append(c)
+        if containing:
+            logger.info(f"  [Seed] {len(containing)} contorno(s) contém o ponto-semente. Priorizando.")
+            valid_contours = containing + not_containing
+
     # Ordenar contornos: priorizar o que tem melhor score (área × proximidade do centro)
-    # Se houver apenas 1, será o primeiro de qualquer forma.
     if len(valid_contours) > 0:
         h, w = mask.shape[:2]
         cx_img, cy_img = w // 2, h // 2
         max_dist = np.sqrt(cx_img ** 2 + cy_img ** 2)
+        
+        # Se temos seed_point, usar ele como referência de centralidade
+        ref_x = float(seed_point[0]) if seed_point is not None else cx_img
+        ref_y = float(seed_point[1]) if seed_point is not None else cy_img
         
         def get_contour_score(c):
             area = cv2.contourArea(c)
@@ -1059,8 +1270,8 @@ def segment(
                 cx = x + cw / 2
                 cy = y + ch / 2
                 
-            dist = np.sqrt((cx - cx_img) ** 2 + (cy - cy_img) ** 2)
-            center_score = 1.0 - (dist / max_dist)
+            dist = np.sqrt((cx - ref_x) ** 2 + (cy - ref_y) ** 2)
+            center_score = 1.0 - (dist / max_dist) if max_dist > 0 else 1.0
             return area * center_score
 
         valid_contours = sorted(valid_contours, key=get_contour_score, reverse=True)
@@ -1101,14 +1312,126 @@ def segment(
     return results
 
 
+def segment_watershed_seeded(
+    image_color: np.ndarray,
+    seed_point: tuple,
+    mdf_point: tuple,
+    max_dim: int = 1000,
+    calibration_corners: np.ndarray = None
+) -> np.ndarray:
+    """
+    Segmentação via Watershed inicializado por sementes.
+    
+    Excelente para resolver problemas de sombras projetadas: enquanto Otsu ou 
+    GrabCut agrupam cores parecidas (como a sombra e a peça), o Watershed 
+    flui a partir da semente e para EXATAMENTE na crista do gradiente 
+    (a borda física da peça).
+    """
+    h_orig, w_orig = image_color.shape[:2]
+    
+    # Downsampling para velocidade e suavização de ruído fino
+    scale = 1.0
+    if max(h_orig, w_orig) > max_dim:
+        scale = max_dim / max(h_orig, w_orig)
+    
+    if scale < 1.0:
+        img_small = cv2.resize(image_color, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    else:
+        img_small = image_color.copy()
+        
+    h_small, w_small = img_small.shape[:2]
+    
+    # Bilateral Filter: suaviza a granulação do MDF sem destruir (borrar) as bordas físicas!
+    # Isso impede que o gradiente da peça se expanda para a sombra.
+    img_small = cv2.bilateralFilter(img_small, 9, 75, 75)
+    
+    # Sementes redimensionadas
+    sp = (int(seed_point[0] * scale), int(seed_point[1] * scale))
+    mp = (int(mdf_point[0] * scale), int(mdf_point[1] * scale))
+    seed_radius = max(5, int(min(h_small, w_small) * 0.015))
+    
+    # Marcadores para o Watershed:
+    # 0 = Desconhecido (onde o algoritmo vai decidir)
+    # 1 = Foreground (Peça)
+    # 2 = Background (MDF)
+    markers = np.zeros((h_small, w_small), dtype=np.int32)
+    
+    # Marcar foreground (1) no ponto da peça
+    cv2.circle(markers, sp, seed_radius, 1, -1)
+    
+    # Marcar background (2) no ponto do MDF
+    cv2.circle(markers, mp, seed_radius * 2, 2, -1)
+    
+    # Marcar bordas da imagem como background garantido (2)
+    border_w = max(5, int(w_small * 0.02))
+    border_h = max(5, int(h_small * 0.02))
+    markers[:border_h, :] = 2
+    markers[-border_h:, :] = 2
+    markers[:, :border_w] = 2
+    markers[:, -border_w:] = 2
+    
+    # Marcar bloco de calibração como background garantido (2)
+    if calibration_corners is not None:
+        try:
+            hull = cv2.convexHull(calibration_corners.astype(np.int32))
+            if scale < 1.0:
+                hull = (hull * scale).astype(np.int32)
+            # Preencher o casco convexo como background
+            cv2.drawContours(markers, [hull], -1, 2, -1)
+        except Exception as e:
+            logger.warning(f"  Watershed: Erro ao marcar calibração: {e}")
+            
+    # Executar Watershed (modifica a matriz 'markers' inplace)
+    cv2.watershed(img_small, markers)
+    
+    # Criar máscara binária apenas da área classificada como 1 (Foreground)
+    mask_small = np.zeros((h_small, w_small), dtype=np.uint8)
+    mask_small[markers == 1] = 255
+    
+    # Upsampling da máscara
+    if scale < 1.0:
+        # Usa INTER_LINEAR para criar bordas suaves (anti-aliasing) em vez de blocos serrilhados (INTER_NEAREST)
+        mask = cv2.resize(mask_small, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        # Aplica um pequeno desfoque para suavizar completamente as escadas de upscaling
+        blur_size = max(3, int(1 / scale) * 2 + 1) # ~13 para scale=1/6
+        if blur_size % 2 == 0: blur_size += 1
+        mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+        # Binariza novamente para ter bordas precisas e perfeitamente lisas
+        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    else:
+        mask = mask_small
+        
+    return mask
+
 def _apply_strategy(
     strategy: str,
     gray_blurred: np.ndarray,
     image_color: np.ndarray,
-    background: np.ndarray = None
+    background: np.ndarray = None,
+    piece_is_lighter: bool = False,
+    seed_point: tuple = None,
+    mdf_point: tuple = None,
+    calibration_corners: np.ndarray = None
 ) -> np.ndarray:
     """Aplica uma estratégia de segmentação específica."""
-    if strategy == "background_sub":
+    if strategy == "watershed_seeded":
+        if seed_point is None or mdf_point is None:
+            raise ValueError("Estratégia 'watershed_seeded' requer seed_point e mdf_point.")
+        return segment_watershed_seeded(
+            image_color, seed_point, mdf_point,
+            calibration_corners=calibration_corners
+        )
+
+    elif strategy == "grabcut_seeded":
+        if seed_point is None or mdf_point is None:
+            raise ValueError("Estratégia 'grabcut_seeded' requer seed_point e mdf_point.")
+        return segment_grabcut_seeded(
+            image_color, seed_point, mdf_point,
+            iterations=5, max_dim=1000,
+            calibration_corners=calibration_corners
+        )
+
+    elif strategy == "background_sub":
         if background is None:
             raise ValueError(
                 "Estratégia 'background_sub' requer imagem de background. "
@@ -1120,10 +1443,10 @@ def _apply_strategy(
         return segment_lab(image_color)
 
     elif strategy == "otsu":
-        return segment_otsu(gray_blurred)
+        return segment_otsu(gray_blurred, piece_is_lighter=piece_is_lighter)
 
     elif strategy == "otsu_dark":
-        return segment_otsu_dark(gray_blurred)
+        return segment_otsu_dark(gray_blurred, piece_is_lighter=piece_is_lighter)
 
     elif strategy == "adaptive":
         return segment_adaptive(gray_blurred)
@@ -1137,7 +1460,7 @@ def _apply_strategy(
     else:
         raise ValueError(
             f"Estratégia de segmentação desconhecida: '{strategy}'. "
-            f"Opções: background_sub, lab, otsu, adaptive, yellow, auto"
+            f"Opções: grabcut_seeded, background_sub, lab, otsu, adaptive, yellow, auto"
         )
 
 
