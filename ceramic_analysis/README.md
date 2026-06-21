@@ -19,6 +19,7 @@ Este subprojeto foi desenvolvido para comparar automaticamente as dimensões de 
 - 🎨 **Mapa de Desvio Visual** — Mapa de calor sobreposto na peça indicando desvios críticos (Vermelho), toleráveis (Amarelo) e ideais (Verde), legenda completa de metrologia.
 - 📊 **Exportação CSV** — Medições, retração percentual, desvios CAD e metadados de escala
 - 🖼️ **Imagens Anotadas com Cotas** — Desenho de cotas gráficas de engenharia (linhas de cota, extensão, ticks de 45° e o valor medido em mm) diretamente sobre a imagem final no perímetro do bounding box da peça, garantindo saídas autoexplicativas e profissionais.
+- 📄 **Relatório HTML Automático** — Geração de relatórios visuais completos contendo imagens comparativas, metadados, medições de retração e mapas de desvio CAD integrados em uma página interativa.
 - ✅ **Validação ImageJ** — Máscaras binárias salvas em PNG para inspeção independente
 
 ---
@@ -36,6 +37,7 @@ ceramic_analysis/
 ├── segmentation.py           # Segmentação (com auto-inversão e ordenação)
 ├── metrology.py              # Detecção e calibração de escala via bloco padrão coplanar
 ├── analysis.py               # Retração, CSV, anotações de cotas e metadados
+├── generate_report.py        # Geração do relatório visual em HTML da sessão
 ├── requirements.txt          # Dependências do projeto (opencv, cadquery, shapely, scipy, trimesh)
 ├── data/                     # Imagens do checkerboard, background e sessões
 └── tests/
@@ -88,6 +90,9 @@ python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20
 
 # Rodar cad-compare em lote com limite de tolerância de desvio customizado (ex: 1.5mm)
 python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl --view all --tolerance 1.5
+
+# Gerar o relatório HTML da sessão consolidando os resultados
+python pipeline.py report --session 20250612
 ```
 
 ---

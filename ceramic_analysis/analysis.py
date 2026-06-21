@@ -688,12 +688,12 @@ def _draw_text_with_bg(
         # Retângulo de fundo
         cv2.rectangle(
             img,
-            (x - pad_x, y - th - pad_y_top),
-            (x + tw + pad_x, y + pad_y_bottom),
+            (int(x - pad_x), int(y - th - pad_y_top)),
+            (int(x + tw + pad_x), int(y + pad_y_bottom)),
             bg_color, -1
         )
         # Texto
-        cv2.putText(img, text, (x, y), font, font_scale, color, thickness)
+        cv2.putText(img, text, (int(x), int(y)), font, font_scale, color, thickness)
 
 def _draw_dashed_line(img, p1, p2, color, thickness, dash_length=10, gap_length=6):
     """Desenha uma linha tracejada entre p1 e p2."""
