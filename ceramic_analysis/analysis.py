@@ -430,11 +430,29 @@ def annotate_image(
     if draw_contour and "contour" in metrics:
         cv2.drawContours(annotated, [metrics["contour"]], -1, COLOR_CONTOUR, 2)
 
-    # Bounding box
-    if draw_bbox and "bbox_x" in metrics:
-        x, y = metrics["bbox_x"], metrics["bbox_y"]
-        bw, bh = metrics["bbox_w"], metrics["bbox_h"]
-        cv2.rectangle(annotated, (x, y), (x + bw, y + bh), COLOR_BBOX, 2)
+    # Bounding box Rotacionado (Substitui o BBox upright)
+    if draw_bbox and "min_rect_w" in metrics:
+        cx = metrics.get("robust_center_x", metrics["min_rect_center_x"])
+        cy = metrics.get("robust_center_y", metrics["min_rect_center_y"])
+        center = (cx, cy)
+        w = metrics.get("robust_w", metrics["min_rect_w"])
+        h = metrics.get("robust_h", metrics["min_rect_h"])
+        size = (w, h)
+        angle = metrics["min_rect_angle"]
+        box = cv2.boxPoints((center, size, angle))
+        box = np.int32(box)
+        cv2.drawContours(annotated, [box], 0, COLOR_BBOX, 2)
+        
+        # Opcional: Desenhar os ângulos internos se disponíveis
+        if "corner_angle_0" in metrics and metrics.get("corner_angle_0", 0) > 0:
+            corners = metrics.get("corners_px", box)
+            if corners is not None and len(corners) == 4:
+                for i in range(4):
+                    pt = tuple(int(x) for x in corners[i])
+                    angle_val = metrics.get(f"corner_angle_{i}", 90.0)
+                    cv2.putText(annotated, f"{angle_val:.1f}o", 
+                               (pt[0] - 20, pt[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 
+                               font_scale * 0.8, COLOR_BBOX, thickness)
 
     # Elipse
     if draw_ellipse and metrics.get("ellipse_major_px", 0) > 0:

@@ -637,6 +637,9 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
                 corner_angle_3 = corner_angles[3]
         except Exception as e:
             logger.debug(f"Erro ao calcular ângulos dos vértices: {e}")
+    
+    # Dimensões Robustas (Mediana) e deslocamento de centro
+    robust_w, robust_h, robust_center = compute_robust_dimensions(contour, min_rect)
 
     metrics = {
         # Bounding box
@@ -650,6 +653,11 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
         "min_rect_angle": min_rect_angle,
         "min_rect_center_x": min_rect_center[0],
         "min_rect_center_y": min_rect_center[1],
+        # Dimensões Robustas
+        "robust_w": robust_w,
+        "robust_h": robust_h,
+        "robust_center_x": robust_center[0],
+        "robust_center_y": robust_center[1],
         # Área e perímetro
         "area_px": area,
         "perimeter_px": perimeter,
@@ -679,6 +687,78 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
 
     return metrics
 
+
+def compute_robust_dimensions(contour: np.ndarray, min_rect: tuple) -> tuple:
+    """
+    Calcula as dimensões e o centro robusto (Mediana) da borda da peça,
+    ignorando rebarbas ou cantos arredondados, pegando a mediana da linha de contorno.
+    """
+    center, (rect_w, rect_h), angle = min_rect
+    
+    # Rotacionar os pontos do contorno para ficarem alinhados aos eixos X e Y
+    pts = contour.reshape(-1, 2) - np.array(center)
+    theta = np.radians(angle)
+    c, s = np.cos(theta), np.sin(theta)
+    
+    # A matriz R gira os pontos do contorno para o eixo upright
+    R = np.array(((c, -s), (s, c)))
+    pts_rot = np.dot(pts, R)
+    
+    # Encontrar as extremidades absolutas do contorno rotacionado
+    min_x, max_x = np.min(pts_rot[:, 0]), np.max(pts_rot[:, 0])
+    min_y, max_y = np.min(pts_rot[:, 1]), np.max(pts_rot[:, 1])
+    
+    # Isolar os pontos que pertencem a cada uma das 4 faces
+    # Ignoramos os 25% das extremidades (cantos) para pegar apenas a face plana central!
+    margin_w = rect_w * 0.25
+    margin_h = rect_h * 0.25
+    
+    # Para a borda superior, pegamos os pontos com Y baixo, e X no meio da peça
+    top_pts = pts_rot[(pts_rot[:, 1] < min_y + rect_h * 0.15) & 
+                      (pts_rot[:, 0] > min_x + margin_w) & 
+                      (pts_rot[:, 0] < max_x - margin_w)]
+                      
+    bottom_pts = pts_rot[(pts_rot[:, 1] > max_y - rect_h * 0.15) & 
+                         (pts_rot[:, 0] > min_x + margin_w) & 
+                         (pts_rot[:, 0] < max_x - margin_w)]
+                         
+    left_pts = pts_rot[(pts_rot[:, 0] < min_x + rect_w * 0.15) & 
+                       (pts_rot[:, 1] > min_y + margin_h) & 
+                       (pts_rot[:, 1] < max_y - margin_h)]
+                       
+    right_pts = pts_rot[(pts_rot[:, 0] > max_x - rect_w * 0.15) & 
+                        (pts_rot[:, 1] > min_y + margin_h) & 
+                        (pts_rot[:, 1] < max_y - margin_h)]
+    
+    # Se a máscara falhar, retorna o retângulo original
+    if len(top_pts) == 0 or len(bottom_pts) == 0 or len(left_pts) == 0 or len(right_pts) == 0:
+        return float(rect_w), float(rect_h), center
+        
+    # A posição real (mediana) de cada face
+    med_top = np.median(top_pts[:, 1])
+    med_bot = np.median(bottom_pts[:, 1])
+    med_left = np.median(left_pts[:, 0])
+    med_right = np.median(right_pts[:, 0])
+    
+    robust_w = med_right - med_left
+    robust_h = med_bot - med_top
+    
+    # O centro do retângulo robusto em relação à origem local
+    robust_cx = (med_left + med_right) / 2.0
+    robust_cy = (med_top + med_bot) / 2.0
+    
+    # Girar o deslocamento do centro de volta para o sistema de coordenadas original
+    shift = np.array([robust_cx, robust_cy])
+    R_inv = np.array(((c, s), (-s, c)))
+    shift_orig = np.dot(shift, R_inv)
+    
+    robust_center = (center[0] + shift_orig[0], center[1] + shift_orig[1])
+    
+    # Garantir orientação correta
+    if (rect_w > rect_h and robust_w < robust_h) or (rect_w <= rect_h and robust_w >= robust_h):
+        robust_w, robust_h = robust_h, robust_w
+        
+    return float(robust_w), float(robust_h), robust_center
 
 def compute_cross_sections(
     contour: np.ndarray,
