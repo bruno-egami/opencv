@@ -540,9 +540,9 @@ def annotate_image(
                     if not drawn_length:
                         if "cross_length_10pct_mm" in metrics:
                             texts = [
-                                f"{metrics['cross_length_10pct_mm']:.1f} mm",
-                                f"{metrics['cross_length_50pct_mm']:.1f} mm",
-                                f"{metrics['cross_length_90pct_mm']:.1f} mm"
+                                f"{metrics['cross_length_10pct_mm']:.2f} mm",
+                                f"{metrics['cross_length_50pct_mm']:.2f} mm",
+                                f"{metrics['cross_length_90pct_mm']:.2f} mm"
                             ]
                             _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
                         else:
@@ -553,9 +553,9 @@ def annotate_image(
                     if not drawn_width:
                         if "cross_width_10pct_mm" in metrics:
                             texts = [
-                                f"{metrics['cross_width_10pct_mm']:.1f} mm",
-                                f"{metrics['cross_width_50pct_mm']:.1f} mm",
-                                f"{metrics['cross_width_90pct_mm']:.1f} mm"
+                                f"{metrics['cross_width_10pct_mm']:.2f} mm",
+                                f"{metrics['cross_width_50pct_mm']:.2f} mm",
+                                f"{metrics['cross_width_90pct_mm']:.2f} mm"
                             ]
                             _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
                         else:
