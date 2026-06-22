@@ -7,4 +7,4 @@ trimesh[easy]>=4.0.0
 cadquery>=2.4.0
 shapely>=2.0.0
 scipy>=1.10.0
-
+customtkinter>=5.2.2

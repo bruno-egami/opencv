@@ -88,6 +88,10 @@ ADAPTIVE_C = 10              # Constante subtraída da média local
 MORPH_KERNEL_SIZE = (7, 7)   # Tamanho do kernel (maior → fecha gaps maiores)
 MORPH_ITERATIONS = 2         # Número de iterações do fechamento morfológico
 
+# ── Burr Shaver (Abertura Morfológica para raspar rebarbas) ──
+BURR_SHAVER_ENABLED = False
+BURR_SHAVER_SIZE = 201
+
 # ── Override manual ──
 # Definir um valor 0-255 para forçar threshold fixo, ignorando Otsu/adaptativo.
 # Usar None para cálculo automático (recomendado na maioria dos casos).

@@ -837,7 +837,7 @@ def cmd_full(args):
 
     try:
         import generate_report
-        generate_report.generate_report(args.session)
+        generate_report.generate_report(args.session, open_browser=True)
     except Exception as report_err:
         logger.warning(f"Não foi possível gerar o relatório HTML automaticamente: {report_err}")
 
@@ -858,7 +858,7 @@ def cmd_create_session(args):
 def cmd_report(args):
     """Gera o relatório HTML da sessão."""
     import generate_report
-    generate_report.generate_report(args.session)
+    generate_report.generate_report(args.session, open_browser=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -924,6 +924,8 @@ Exemplos:
         "--no-annotate", action="store_true",
         help="Pular geração de imagens anotadas"
     )
+    p_proc.add_argument("--burr-shaver", action="store_true", help="Habilita Burr Shaver (arredondamento morfológico para rebarbas)")
+    p_proc.add_argument("--burr-size", type=int, default=201, help="Tamanho do kernel do Burr Shaver (default 201)")
 
     # analyze
     p_analyze = subparsers.add_parser("analyze", help="Compara úmido vs seco e calcula retração")
@@ -934,6 +936,8 @@ Exemplos:
     p_analyze.add_argument("--strategy", default="auto")
 # --perspective-correction removed
     p_analyze.add_argument("--no-annotate", action="store_true", default=False)
+    p_analyze.add_argument("--burr-shaver", action="store_true")
+    p_analyze.add_argument("--burr-size", type=int, default=201)
 
     # full
     p_full = subparsers.add_parser("full", help="Pipeline completo")
@@ -947,6 +951,8 @@ Exemplos:
     )
 # --perspective-correction removed
     p_full.add_argument("--no-annotate", action="store_true", default=False)
+    p_full.add_argument("--burr-shaver", action="store_true")
+    p_full.add_argument("--burr-size", type=int, default=201)
     p_full.add_argument("--cad", default=None, help="Caminho para o modelo CAD (.stl/.step/.stp) para comparacao")
     p_full.add_argument(
         "--view-cad", nargs="+", dest="view_cad",
@@ -977,6 +983,8 @@ Exemplos:
     p_cad.add_argument("--registration", choices=["icp", "centroid", "bbox_center"], default=None)
     p_cad.add_argument("--tolerance", type=float, default=None, help="Tolerancia limite de desvio (mm)")
     p_cad.add_argument("--no-annotate", action="store_true", default=False, help="Nao gerar imagens anotadas com cotas")
+    p_cad.add_argument("--burr-shaver", action="store_true")
+    p_cad.add_argument("--burr-size", type=int, default=201)
 
     # report
     p_rep = subparsers.add_parser("report", help="Gera relatório HTML da sessão")
@@ -992,6 +1000,12 @@ def main():
     if not args.command:
         parser.print_help()
         return
+
+    # Burr Shaver config (global)
+    if hasattr(args, "burr_shaver") and args.burr_shaver:
+        config.BURR_SHAVER_ENABLED = True
+    if hasattr(args, "burr_size") and args.burr_size is not None:
+        config.BURR_SHAVER_SIZE = args.burr_size
 
     setup_logging(args.verbose)
 

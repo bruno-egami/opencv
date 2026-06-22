@@ -7,6 +7,7 @@ import os
 import csv
 import json
 import logging
+import webbrowser
 from pathlib import Path
 
 import config
@@ -494,7 +495,7 @@ def read_csv_data(session_id: str) -> tuple:
 
     return measurements, cad_comparisons
 
-def generate_report(session_id: str):
+def generate_report(session_id: str, open_browser: bool = False):
     measurements, cad_comparisons = read_csv_data(session_id)
 
     if not measurements:
@@ -530,6 +531,7 @@ def generate_report(session_id: str):
     # Valores padrão se não encontrados
     dim_top_w = float(top_meas.get("min_rect_w_mm", 0.0)) if top_meas else 0.0
     dim_top_h = float(top_meas.get("min_rect_h_mm", 0.0)) if top_meas else 0.0
+
     area_top = float(top_meas.get("area_mm2", 0.0)) if top_meas else 0.0
     
     thickness = float(side_meas.get("bbox_h_mm", 0.0)) if side_meas else 0.0
@@ -773,6 +775,12 @@ def generate_report(session_id: str):
         f.write(html_content)
 
     print(f"Relatório gerado com sucesso em: {output_report_path.resolve()}")
+    
+    if open_browser:
+        try:
+            webbrowser.open(output_report_path.resolve().as_uri())
+        except Exception as e:
+            logger.warning(f"Não foi possível abrir o navegador: {e}")
 
 if __name__ == "__main__":
     import sys

@@ -526,12 +526,17 @@ def postprocess_mask(mask: np.ndarray) -> np.ndarray:
         iterations=config.MORPH_ITERATIONS
     )
     
-    # "Oscillation/Burr Shaver": kernel grande (ex: 201x201) com MORPH_OPEN (Erode -> Dilate)
-    # Raspa as pequenas "barrigas" e "dentes" físicos que sobraram na borda da argila
-    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (201, 201))
-    opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open)
-    
-    return opened
+    # Burr Shaver opcional
+    if getattr(config, "BURR_SHAVER_ENABLED", False):
+        size = getattr(config, "BURR_SHAVER_SIZE", 201)
+        # O kernel deve ter dimensão ímpar
+        if size % 2 == 0:
+            size += 1
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+        opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open)
+        return opened
+        
+    return closed
 
 
 def extract_contour_metrics(contour: np.ndarray) -> dict:
