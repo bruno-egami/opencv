@@ -60,41 +60,36 @@ pip install -r requirements.txt
 
 ## Guia Rápido de Uso
 
-*Sempre execute os comandos CLI de dentro deste diretório.*
+A ferramenta agora opera através de uma **Interface Gráfica de Usuário (GUI)** moderna e intuitiva, que gerencia todo o fluxo de trabalho sem necessidade de comandos de terminal.
 
-### 1. Calibração da câmera (executar uma vez)
-Coloque 10-15 fotos `.NEF` do checkerboard de calibração em `data/calibration/raw/`:
+Para iniciar o aplicativo, navegue até a pasta do projeto e execute:
 ```bash
-python pipeline.py calibrate
-```
-Saída: `output/calibration_params.yaml`. Meta: RMS de reprojeção < 0.5 px.
-
-### 2. Criar uma sessão de captura
-```bash
-python pipeline.py create-session --session 20250612
-```
-Isso cria a estrutura de diretórios em `data/sessions/session_20250612/` incluindo a pasta `cad/`. Copie os arquivos `.NEF` e os arquivos do modelo CAD para suas respectivas pastas.
-
-### 3. Executar o pipeline completo (com Comparação CAD)
-Ao fornecer o modelo CAD, o pipeline rodará automaticamente a comparação geométrica tridimensional na 5ª etapa:
-```bash
-python pipeline.py full --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl
+python gui.py
 ```
 
-### 4. Comandos Individuais e CAD
-```bash
-# Apenas processar sem análise comparativa
-python pipeline.py process --session 20250612 --view top --state wet
+### Fluxo de Trabalho na GUI:
 
-# Comparar as fotos processadas de uma sessão com um modelo CAD (STL ou STEP)
-python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20250612/cad/peca.step --view top front
+1. **Calibração da Lente**
+   - Coloque de 10 a 15 fotos `.NEF` do checkerboard em `data/calibration/raw/`.
+   - Clique em **"Calibrar Lente"** no painel de ferramentas. O resultado será salvo em `output/calibration_params.yaml`.
 
-# Rodar cad-compare em lote com limite de tolerância de desvio customizado (ex: 1.5mm)
-python pipeline.py cad-compare --session 20250612 --cad data/sessions/session_20250612/cad/modelo.stl --view all --tolerance 1.5
+2. **Criação de Sessão**
+   - Digite o nome da sessão no campo de texto (ex: `caulim_cilindro`).
+   - Clique em **"Criar Nova Sessão"**. O aplicativo criará automaticamente a estrutura de pastas correta em `data/sessions/session_caulim_cilindro/`.
+   - Arraste suas fotos `.NEF` secas/úmidas e os arquivos CAD (se houver) para dentro das novas pastas geradas.
 
-# Gerar o relatório HTML da sessão consolidando os resultados
-python pipeline.py report --session 20250612
-```
+3. **Configuração de Processamento**
+   - **Seletor de Material**: Escolha entre "Termoplástico" e "Argila" para adaptar o algoritmo matemático de isolamento das bordas.
+   - Selecione opcionalmente um modelo 3D (STL ou STEP) através do botão de busca, caso queira comparar a contração dimensional contra o CAD original.
+
+4. **Processamento e Análise**
+   - **"Converter RAW"**: Transforma os `.NEF` em `.TIFF` brutos.
+   - **"Processar"**: Ativa a janela interativa onde você marcará com o mouse o centro da peça e os cantos do bloco padrão de calibração. A régua de contraste pode ser ativada na tecla `[C]`.
+   - **"Analisar Retração" / "Comparar com CAD"**: Comparam o estado seco vs úmido e geram os relatórios e os mapas de calor de desvios.
+   - **"Rodar Completo (Automático)"**: Executa todas as etapas acima em sequência contínua com base nos arquivos disponíveis na sessão.
+
+5. **Visualizar Relatórios**
+   - Clique em **"Gerar Relatório HTML"** para consolidar imagens visuais e planilhas em uma página de navegador pronta para publicação acadêmica.
 
 ---
 
