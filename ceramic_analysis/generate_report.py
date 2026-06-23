@@ -694,12 +694,12 @@ def generate_report(session_id: str, open_browser: bool = False):
     # --- Construir HTML: seções transversais ---
     cross_section_rows_html = ""
     cross_keys = [
-        ("Largura a 10%", "cross_width_10pct_mm"),
+        ("Largura a 20%", "cross_width_20pct_mm"),
         ("Largura a 50%", "cross_width_50pct_mm"),
-        ("Largura a 90%", "cross_width_90pct_mm"),
-        ("Comprimento a 10%", "cross_length_10pct_mm"),
+        ("Largura a 80%", "cross_width_80pct_mm"),
+        ("Comprimento a 20%", "cross_length_20pct_mm"),
         ("Comprimento a 50%", "cross_length_50pct_mm"),
-        ("Comprimento a 90%", "cross_length_90pct_mm"),
+        ("Comprimento a 80%", "cross_length_80pct_mm"),
     ]
     has_cross = any(top_meas.get(k, 0) for _, k in cross_keys) if top_meas else False
     if has_cross:
