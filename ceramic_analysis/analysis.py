@@ -538,11 +538,11 @@ def annotate_image(
                 if abs(len_mm - major_mm) <= abs(len_mm - minor_mm):
                     # Edge de comprimento (Length)
                     if not drawn_length:
-                        if "cross_length_10pct_mm" in metrics:
+                        if "cross_length_20pct_mm" in metrics:
                             texts = [
-                                f"{metrics['cross_length_10pct_mm']:.2f} mm",
+                                f"{metrics['cross_length_20pct_mm']:.2f} mm",
                                 f"{metrics['cross_length_50pct_mm']:.2f} mm",
-                                f"{metrics['cross_length_90pct_mm']:.2f} mm"
+                                f"{metrics['cross_length_80pct_mm']:.2f} mm"
                             ]
                             _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
                         else:
@@ -551,11 +551,11 @@ def annotate_image(
                 else:
                     # Edge de largura (Width)
                     if not drawn_width:
-                        if "cross_width_10pct_mm" in metrics:
+                        if "cross_width_20pct_mm" in metrics:
                             texts = [
-                                f"{metrics['cross_width_10pct_mm']:.2f} mm",
+                                f"{metrics['cross_width_20pct_mm']:.2f} mm",
                                 f"{metrics['cross_width_50pct_mm']:.2f} mm",
-                                f"{metrics['cross_width_90pct_mm']:.2f} mm"
+                                f"{metrics['cross_width_80pct_mm']:.2f} mm"
                             ]
                             _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
                         else:
@@ -792,7 +792,7 @@ def _draw_segment_cota(
     text_angle = 90 if abs(u[0]) > abs(u[1]) else 0
     
     if custom_texts and isinstance(custom_texts, list) and len(custom_texts) == 3:
-        fractions = [0.10, 0.50, 0.90]
+        fractions = [0.20, 0.50, 0.80]
         for i, (frac, text_val) in enumerate(zip(fractions, custom_texts)):
             # Posicionamento das três medidas (10%, 50%, 90%)
             pt_along_edge = p1 + frac * (p2 - p1)

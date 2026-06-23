@@ -123,6 +123,11 @@ class CeramicAnalysisGUI(ctk.CTk):
         self.combo_state = ctk.CTkComboBox(self.options_frame, values=["both", "wet", "dry"])
         self.combo_state.pack(side="left", padx=(0, 20))
 
+        self.lbl_material = ctk.CTkLabel(self.options_frame, text="Material:")
+        self.lbl_material.pack(side="left", padx=(0, 5))
+        self.combo_material = ctk.CTkComboBox(self.options_frame, values=["Argila", "Termoplástico"])
+        self.combo_material.pack(side="left", padx=(0, 20))
+
         # Linha 4: Burr Shaver
         self.burr_frame = ctk.CTkFrame(self.config_frame, fg_color="transparent")
         self.burr_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=10)
@@ -316,14 +321,16 @@ class CeramicAnalysisGUI(ctk.CTk):
         if session:
             view = self.combo_view.get()
             state = self.combo_state.get()
-            args = ["process", "--session", session, "--view", view, "--state", state]
+            material = self.combo_material.get()
+            args = ["process", "--session", session, "--view", view, "--state", state, "--material", material]
             args.extend(self.get_burr_args())
             self.run_command_in_thread(args)
 
     def cmd_analyze(self):
         session = self.get_session_id()
         if session:
-            args = ["analyze", "--session", session]
+            material = self.combo_material.get()
+            args = ["analyze", "--session", session, "--material", material]
             args.extend(self.get_burr_args())
             self.run_command_in_thread(args)
 
@@ -339,13 +346,15 @@ class CeramicAnalysisGUI(ctk.CTk):
 
         view = self.combo_view.get()
         state = self.combo_state.get()
+        material = self.combo_material.get()
         
         args = [
             "cad-compare", 
             "--session", session, 
             "--cad", cad_path, 
             "--view", view, 
-            "--state", state
+            "--state", state,
+            "--material", material
         ]
         args.extend(self.get_burr_args())
         self.run_command_in_thread(args)
@@ -360,7 +369,8 @@ class CeramicAnalysisGUI(ctk.CTk):
         if not session:
             return
             
-        cmd_args = ["full", "--session", session]
+        material = self.combo_material.get()
+        cmd_args = ["full", "--session", session, "--material", material]
         
         cad_path = self.get_cad_path()
         if cad_path:

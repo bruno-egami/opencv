@@ -926,6 +926,7 @@ Exemplos:
     )
     p_proc.add_argument("--burr-shaver", action="store_true", help="Habilita Burr Shaver (arredondamento morfológico para rebarbas)")
     p_proc.add_argument("--burr-size", type=int, default=201, help="Tamanho do kernel do Burr Shaver (default 201)")
+    p_proc.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila", help="Tipo de material (guiar a segmentação)")
 
     # analyze
     p_analyze = subparsers.add_parser("analyze", help="Compara úmido vs seco e calcula retração")
@@ -938,6 +939,7 @@ Exemplos:
     p_analyze.add_argument("--no-annotate", action="store_true", default=False)
     p_analyze.add_argument("--burr-shaver", action="store_true")
     p_analyze.add_argument("--burr-size", type=int, default=201)
+    p_analyze.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila")
 
     # full
     p_full = subparsers.add_parser("full", help="Pipeline completo")
@@ -953,6 +955,7 @@ Exemplos:
     p_full.add_argument("--no-annotate", action="store_true", default=False)
     p_full.add_argument("--burr-shaver", action="store_true")
     p_full.add_argument("--burr-size", type=int, default=201)
+    p_full.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila")
     p_full.add_argument("--cad", default=None, help="Caminho para o modelo CAD (.stl/.step/.stp) para comparacao")
     p_full.add_argument(
         "--view-cad", nargs="+", dest="view_cad",
@@ -985,6 +988,7 @@ Exemplos:
     p_cad.add_argument("--no-annotate", action="store_true", default=False, help="Nao gerar imagens anotadas com cotas")
     p_cad.add_argument("--burr-shaver", action="store_true")
     p_cad.add_argument("--burr-size", type=int, default=201)
+    p_cad.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila")
 
     # report
     p_rep = subparsers.add_parser("report", help="Gera relatório HTML da sessão")
@@ -1006,6 +1010,9 @@ def main():
         config.BURR_SHAVER_ENABLED = True
     if hasattr(args, "burr_size") and args.burr_size is not None:
         config.BURR_SHAVER_SIZE = args.burr_size
+        
+    if hasattr(args, "material") and args.material:
+        config.MATERIAL_TYPE = args.material
 
     setup_logging(args.verbose)
 

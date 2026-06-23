@@ -437,6 +437,91 @@ def segment_grabcut_seeded(
     
     return mask
 
+def segment_edges(gray_blurred: np.ndarray, seed_point: tuple = None, calibration_corners: np.ndarray = None) -> np.ndarray:
+    """
+    Segmentação robusta usando Canny Edges e validada pelo clique do usuário.
+    Projetado especificamente para argilas/caulim que soltam pó na base MDF.
+    """
+    h_orig, w_orig = gray_blurred.shape[:2]
+    scale = 800.0 / max(h_orig, w_orig)
+    if scale < 1.0:
+        gray_small = cv2.resize(gray_blurred, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    else:
+        gray_small = gray_blurred.copy()
+
+    # Suaviza a imagem levemente para reduzir ruído e textura (pó de argila),
+    # mas sem encolher as sombras verdadeiras da borda da peça (grau 9 em vez de 15)
+    blur = cv2.GaussianBlur(gray_small, (9, 9), 0)
+    
+    # Extrair bordas físicas (sombra e quina da peça)
+    edges = cv2.Canny(blur, 30, 100)
+
+    # Fechamento morfológico forte para CONECTAR as linhas e garantir que buracos na sombra se fechem
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 21))
+    closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    # Ocultar o bloco de calibração se estiver disponível para evitar falsos positivos
+    if calibration_corners is not None and len(calibration_corners) > 0:
+        try:
+            hull = cv2.convexHull(calibration_corners)
+            if scale < 1.0:
+                hull = (hull * scale).astype(np.int32)
+            
+            x, y, w, h = cv2.boundingRect(hull)
+            square_size = max(w / 7.0, h / 6.0)
+            
+            # Dilatação massiva para ter CERTEZA que engolirá as "bordas artificiais" do pré-processamento
+            dilation = int(np.ceil(3.0 * (square_size / 6.0))) + int(10 * scale) + 50
+            
+            # Pintar um retângulo totalmente preto sobre o bloco
+            cv2.rectangle(closed_edges, (int(x)-dilation, int(y)-dilation), (int(x+w)+dilation, int(y+h)+dilation), 0, -1)
+        except Exception as e:
+            logger.warning(f"  Edges: Erro ao mascarar bloco de calibração: {e}")
+
+    # Achar todos os contornos da imagem (usar RETR_TREE para pegar contornos internos e externos)
+    contours, _ = cv2.findContours(closed_edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    mask_small = np.zeros_like(gray_small)
+    
+    # Se o seed point estiver disponível, achamos o MENOR contorno que abriga o ponto
+    if seed_point is not None and len(contours) > 0:
+        sp_small = (seed_point[0] * scale, seed_point[1] * scale)
+        
+        valid_contours = []
+        img_area = gray_small.shape[0] * gray_small.shape[1]
+        for c in contours:
+            # pointPolygonTest retorna >= 0 se o ponto está dentro ou na borda do contorno
+            if cv2.pointPolygonTest(c, sp_small, False) >= 0:
+                area = cv2.contourArea(c)
+                # Adicionamos uma área mínima para não pegar ruídos de 1 pixel
+                # E área máxima (15% da imagem) para excluir a placa de MDF inteira
+                if 100 < area < (img_area * 0.15):
+                    valid_contours.append((area, c))
+                
+        if valid_contours:
+            # Ordena de forma DECRESCENTE para pegar o MAIOR contorno do objeto.
+            # Isso garante que a linha capturada seja a aresta externa (base da peça no MDF)
+            # e não a aresta interna (teto da peça volumétrica).
+            valid_contours.sort(key=lambda x: x[0], reverse=True)
+            best_contour = valid_contours[0][1]
+            cv2.drawContours(mask_small, [best_contour], -1, 255, -1)
+            logger.debug(f"  Edges: Contorno externo validado pelo clique (área={valid_contours[0][0]:.1f}).")
+        else:
+            # Se não achou, recai sobre o maior contorno da imagem inteira como fallback
+            c = max(contours, key=cv2.contourArea)
+            cv2.drawContours(mask_small, [c], -1, 255, -1)
+            logger.debug("  Edges: Seed point fora de qualquer contorno válido. Fallback para maior contorno.")
+    elif len(contours) > 0:
+        c = max(contours, key=cv2.contourArea)
+        cv2.drawContours(mask_small, [c], -1, 255, -1)
+
+    # Escalar a máscara de volta para o tamanho original
+    if scale < 1.0:
+        mask = cv2.resize(mask_small, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+    else:
+        mask = mask_small
+
+    return mask
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Avaliação de qualidade da máscara
@@ -491,7 +576,8 @@ def evaluate_mask_quality(mask: np.ndarray) -> dict:
             compactness = (4 * np.pi * area) / (perimeter * perimeter)
 
     # Critérios de qualidade
-    proportion_ok = 0.01 <= proportion <= 0.80
+    # Imagens de alta resolução (~64MP) fazem com que a peça de argila caia para < 0.5%
+    proportion_ok = 0.0001 <= proportion <= 0.80
     has_contours = len(valid_contours) > 0
     compactness_ok = compactness > 0.05  # Consistente com filtro de circularidade
 
@@ -779,18 +865,18 @@ def compute_cross_sections(
     Args:
         contour: Contorno OpenCV (array Nx1x2).
         min_rect: Resultado de cv2.minAreaRect(contour) — (center, (w, h), angle).
-        positions: Lista de posições relativas (0.0 a 1.0). Default: [0.10, 0.50, 0.90].
+        positions: Lista de posições relativas (0.0 a 1.0). Default: [0.20, 0.50, 0.80].
 
     Returns:
         Dict com as medidas em pixels:
-            - cross_width_10pct_px, cross_width_50pct_px, cross_width_90pct_px
-            - cross_length_10pct_px, cross_length_50pct_px, cross_length_90pct_px
+            - cross_width_20pct_px, cross_width_50pct_px, cross_width_80pct_px
+            - cross_length_20pct_px, cross_length_50pct_px, cross_length_80pct_px
             - cross_width_pts (lista de pares de pontos para desenho)
             - cross_length_pts (lista de pares de pontos para desenho)
         Retorna None se o contorno for insuficiente.
     """
     if positions is None:
-        positions = [0.10, 0.50, 0.90]
+        positions = [0.20, 0.50, 0.80]
 
     center, (rect_w, rect_h), angle = min_rect
 
@@ -1217,6 +1303,9 @@ def segment(
         # Tentar cada estratégia na ordem de preferência
         strategies_to_try = []
 
+        if getattr(config, "MATERIAL_TYPE", "Argila") == "Argila":
+            strategies_to_try.append(("edges", None))
+
         if seed_point is not None and mdf_point is not None:
             # Watershed resolve maravilhosamente bem o problema de peças com sombras
             # e núcleos com cor idêntica ao fundo, baseando-se em gradientes.
@@ -1515,6 +1604,9 @@ def _apply_strategy(
             iterations=5, max_dim=1000,
             calibration_corners=calibration_corners
         )
+
+    elif strategy == "edges":
+        return segment_edges(gray_blurred, seed_point, calibration_corners)
 
     elif strategy == "background_sub":
         if background is None:

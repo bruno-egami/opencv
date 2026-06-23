@@ -61,6 +61,11 @@ CENTER_TOLERANCE = 0.30      # Fração da imagem considerada "zona central" (30
 #                       Avalia qualidade da máscara em cada passo
 SEGMENTATION_STRATEGY = "auto"
 
+# ── Tipo de Material ──
+# "Argila" (default) ativa a segmentação focada em bordas por conta das manchas
+# "Termoplástico" mantém a prioridade no contraste de cores.
+MATERIAL_TYPE = "Argila"
+
 # ── Subtração de fundo ──
 # Pixels com |imagem - background| > BG_SUB_THRESHOLD são considerados "objeto".
 # ↑ Aumentar (ex: 35-50) se o fundo ruidoso gera falsos positivos
