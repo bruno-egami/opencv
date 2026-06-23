@@ -9,16 +9,17 @@ Este subprojeto foi desenvolvido para comparar automaticamente as dimensões de 
 - 📷 **Conversão RAW** — Arquivos `.NEF` (Nikon) → TIFF 16-bit via `rawpy`
 - 🔧 **Calibração de câmera** — Checkerboard 9×6 com `cv2.calibrateCamera`
 - 🔍 **Pré-processamento** — Correção de distorção, equalização de histograma, filtro gaussiano
-- 🎯 **Segmentação multi-estratégia** — Subtração de fundo, LAB color space, Otsu, adaptativo (com detecção de inversão para materiais claros/escuros)
+- 🎯 **Segmentação multi-estratégia** — Subtração de fundo, LAB color space, Otsu e extração de bordas paramétricas (`segment_edges`) para isolar peças complexas que sujam a base (ex: pó de **Argila** e Caulim sobre o MDF).
 - 📏 **Metrologia Coplanar por Bloco Padrão** — Calibração por imagem utilizando um bloco físico padrão assimétrico de `9×8` quadrados (`6mm` de lado e `3mm` de borda branca, dimensões externas `60×54mm`) posicionado coplanar à face da peça cerâmica. Isso elimina erros de escala causados por profundidade e paralaxe.
 - 📐 **Interface Gráfica Interativa** — Ajuste manual fino das interseções do bloco de calibração e do contorno da peça segmentada:
-  - **Proporção Dinâmica (Aspect Ratio)**: Garante que maximizar ou redimensionar a janela OpenCV não cause distorções geométricas na imagem da peça.
-  - **Filtro de Contraste Integrado**: Tecla **`[C]`** ativa/desativa em tempo real um realce de contraste (CLAHE no espaço LAB) para auxiliar na visualização e refinamento das bordas.
+  - **Seletor de Material**: Seleção entre "Argila" e "Termoplástico" para calibrar automaticamente a sensibilidade da segmentação contra manchas na base.
+  - **Proporção Dinâmica (Aspect Ratio)**: Garante que maximizar ou redimensionar a janela OpenCV não cause distorções geométricas.
+  - **Filtro de Contraste Integrado**: Tecla **`[C]`** ativa/desativa um realce de contraste (CLAHE no espaço LAB) para auxiliar na visualização.
 - 🧊 **Dimensões 3D** — Combinação de vistas de cima (X-Y) e lateral (X-Z)
 - 🖥️ **Comparação CAD (STL/STEP)** — Suporte nativo a STEP do **Autodesk Inventor** via CadQuery, orientação automática por PCA com fallback para OBB, registro ICP (com suporte a simetria de rotação/translação) e extração de furos/cavidades.
 - 🎨 **Mapa de Desvio Visual** — Mapa de calor sobreposto na peça indicando desvios críticos (Vermelho), toleráveis (Amarelo) e ideais (Verde), legenda completa de metrologia.
-- 📊 **Exportação CSV** — Medições, retração percentual, desvios CAD e metadados de escala
-- 🖼️ **Imagens Anotadas com Cotas** — Desenho de cotas gráficas de engenharia (linhas de cota, extensão, ticks de 45° e o valor medido em mm) diretamente sobre a imagem final no perímetro do bounding box da peça, garantindo saídas autoexplicativas e profissionais.
+- 📊 **Exportação CSV** — Medições completas, retração percentual, desvios CAD, metadados de escala e cotas transversais relativas extraídas a **20%, 50% e 80%** de comprimento e largura.
+- 🖼️ **Imagens Anotadas com Cotas** — Desenho de cotas gráficas de engenharia (linhas de cota, extensão, ticks de 45° e o valor medido em mm) diretamente sobre a imagem final no perímetro do bounding box da peça e marcações nas seções de 20%, 50% e 80%, garantindo saídas autoexplicativas e profissionais.
 - 📄 **Relatório HTML Automático** — Geração de relatórios visuais completos contendo imagens comparativas, metadados, medições de retração e mapas de desvio CAD integrados em uma página interativa.
 - ✅ **Validação ImageJ** — Máscaras binárias salvas em PNG para inspeção independente
 
