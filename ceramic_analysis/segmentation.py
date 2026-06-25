@@ -316,28 +316,29 @@ def segment_adaptive(gray_blurred: np.ndarray) -> np.ndarray:
 
 def segment_grabcut_seeded(
     image_color: np.ndarray,
-    seed_point: tuple,
+    seed_points: list,
     mdf_point: tuple,
     iterations: int = 5,
     max_dim: int = 1000,
     calibration_corners: np.ndarray = None
 ) -> np.ndarray:
     """
-    Segmentação via GrabCut inicializado com pontos-semente do usuário.
+    Segmentação via GrabCut inicializado com múltiplos pontos-semente do usuário.
     
     Para performance, a imagem é redimensionada para max_dim pixels na maior
     dimensão antes do GrabCut, e a máscara resultante é escalada de volta.
     
     Inicialização da máscara:
     1. Tudo como GC_PR_BGD (provável background)
-    2. Borda de 10% como GC_BGD (background definitivo)
-    3. Região ampla ao redor do seed_point como GC_PR_FGD
-    4. Núcleo do seed_point como GC_FGD (foreground definitivo)
-    5. Região do mdf_point como GC_BGD
+    2. Borda de 5% como GC_BGD (background definitivo)
+    3. Para cada semente:
+       - Região ampla ao redor como GC_PR_FGD
+       - Núcleo como GC_FGD (foreground definitivo)
+    4. Região do mdf_point como GC_BGD
     
     Args:
         image_color: Imagem BGR (uint8).
-        seed_point: (x, y) ponto dentro da peça (foreground).
+        seed_points: Lista de tuplas (x, y) pontos dentro das peças (foreground).
         mdf_point: (x, y) ponto no MDF (background).
         iterations: Número de iterações do GrabCut.
         max_dim: Dimensão máxima da imagem redimensionada para GrabCut.
@@ -355,38 +356,38 @@ def segment_grabcut_seeded(
         h_small = int(h_orig * scale)
         img_small = cv2.resize(image_color, (w_small, h_small), interpolation=cv2.INTER_AREA)
         # Escalar seed points
-        sp = (int(seed_point[0] * scale), int(seed_point[1] * scale))
+        sps = [(int(sp[0] * scale), int(sp[1] * scale)) for sp in seed_points]
         mp = (int(mdf_point[0] * scale), int(mdf_point[1] * scale))
         logger.debug(f"  GrabCut: redimensionando {w_orig}x{h_orig} → {w_small}x{h_small} (scale={scale:.3f})")
     else:
-        img_small = image_color
+        img_small = image_color.copy()
         w_small, h_small = w_orig, h_orig
-        sp = seed_point
+        sps = seed_points
         mp = mdf_point
     
     # Inicializar máscara: tudo como provável background
     gc_mask = np.full((h_small, w_small), cv2.GC_PR_BGD, dtype=np.uint8)
     
-    # Marcar borda de 10% como background definitivo (a peça não está na borda)
-    border_y = max(5, int(h_small * 0.10))
-    border_x = max(5, int(w_small * 0.10))
+    # Marcar borda de 5% como background definitivo
+    border_y = max(5, int(h_small * 0.05))
+    border_x = max(5, int(w_small * 0.05))
     gc_mask[:border_y, :] = cv2.GC_BGD          # Topo
     gc_mask[h_small - border_y:, :] = cv2.GC_BGD  # Base
     gc_mask[:, :border_x] = cv2.GC_BGD            # Esquerda
     gc_mask[:, w_small - border_x:] = cv2.GC_BGD  # Direita
     
-    # Raio para as sementes — proporcional à imagem redimensionada
+    # Raio para as sementes
     seed_radius = max(8, int(min(h_small, w_small) * 0.02))
-    
-    # Marcar região ampla ao redor do seed como provável foreground
     fgd_radius = max(seed_radius * 5, int(min(h_small, w_small) * 0.12))
-    cv2.circle(gc_mask, sp, fgd_radius, cv2.GC_PR_FGD, -1)
     
-    # Marcar núcleo do seed_point como foreground definitivo
-    cv2.circle(gc_mask, sp, seed_radius, cv2.GC_FGD, -1)
+    for sp in sps:
+        # Marcar região ampla ao redor do seed como provável foreground
+        cv2.circle(gc_mask, sp, fgd_radius, cv2.GC_PR_FGD, -1)
+        # Marcar núcleo do seed_point como foreground definitivo
+        cv2.circle(gc_mask, sp, seed_radius, cv2.GC_FGD, -1)
     
     # Marcar região do mdf_point como background definitivo
-    cv2.circle(gc_mask, mp, seed_radius * 2, cv2.GC_BGD, -1)
+    cv2.circle(gc_mask, mp, seed_radius * 3, cv2.GC_BGD, -1)
     
     # Marcar região do bloco de calibração como background definitivo
     if calibration_corners is not None:
@@ -398,46 +399,45 @@ def segment_grabcut_seeded(
             calib_mask = np.zeros_like(gc_mask)
             cv2.drawContours(calib_mask, [hull], -1, 255, -1)
             
-            # Dilatar para cobrir a borda branca (aprox 3mm)
-            x, y, w, h = cv2.boundingRect(hull)
-            square_size = max(w / 7.0, h / 6.0)
-            dilation = int(np.ceil(3.0 * (square_size / 6.0))) + int(10 * scale)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*dilation+1, 2*dilation+1))
-            calib_mask_dilated = cv2.dilate(calib_mask, kernel)
+            # Dilatar para cobrir margem
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            calib_mask = cv2.dilate(calib_mask, kernel)
             
-            gc_mask[calib_mask_dilated == 255] = cv2.GC_BGD
-            logger.debug("  GrabCut: Bloco de calibração marcado como GC_BGD.")
+            gc_mask[calib_mask == 255] = cv2.GC_BGD
         except Exception as e:
-            logger.warning(f"  GrabCut: Erro ao mascarar bloco calibração: {e}")
+            logger.warning(f"  GrabCut: Erro ao marcar calibração: {e}")
+            
+    # Modelos de cor internos do GrabCut
+    bgd_model = np.zeros((1, 65), np.float64)
+    fgd_model = np.zeros((1, 65), np.float64)
     
-    # Modelos GMM para foreground e background
-    bgd_model = np.zeros((1, 65), dtype=np.float64)
-    fgd_model = np.zeros((1, 65), dtype=np.float64)
+    # Executar GrabCut no modo de máscara
+    try:
+        cv2.grabCut(img_small, gc_mask, None, bgd_model, fgd_model, iterations, cv2.GC_INIT_WITH_MASK)
+    except Exception as e:
+        logger.error(f"  Falha no GrabCut: {e}")
+        raise ValueError("Falha na execução do GrabCut.")
+        
+    # Converter máscara GrabCut (0,2 = Fundo | 1,3 = Objeto) para Binária (0, 255)
+    mask_small = np.where((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
     
-    # Executar GrabCut
-    logger.debug(f"  GrabCut: seed={sp}, mdf={mp}, iter={iterations}, img={w_small}x{h_small}")
-    cv2.grabCut(
-        img_small, gc_mask, None,
-        bgd_model, fgd_model,
-        iterations,
-        cv2.GC_INIT_WITH_MASK
-    )
+    # Aplicar fechamento morfológico para unir partes desconexas das peças
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask_small = cv2.morphologyEx(mask_small, cv2.MORPH_CLOSE, close_kernel)
     
-    # Converter resultado: FGD e PR_FGD → 255, resto → 0
-    mask_small = np.where(
-        (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD),
-        255, 0
-    ).astype(np.uint8)
-    
-    # Escalar máscara de volta para resolução original
+    # Upsampling
     if scale < 1.0:
-        mask = cv2.resize(mask_small, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+        mask = cv2.resize(mask_small, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        blur_size = max(3, int(1 / scale) * 2 + 1)
+        if blur_size % 2 == 0: blur_size += 1
+        mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
     else:
         mask = mask_small
-    
+        
     return mask
 
-def segment_edges(gray_blurred: np.ndarray, seed_point: tuple = None, calibration_corners: np.ndarray = None) -> np.ndarray:
+def segment_edges(gray_blurred: np.ndarray, seed_points: list = None, calibration_corners: np.ndarray = None) -> np.ndarray:
     """
     Segmentação robusta usando Canny Edges e validada pelo clique do usuário.
     Projetado especificamente para argilas/caulim que soltam pó na base MDF.
@@ -483,34 +483,37 @@ def segment_edges(gray_blurred: np.ndarray, seed_point: tuple = None, calibratio
 
     mask_small = np.zeros_like(gray_small)
     
-    # Se o seed point estiver disponível, achamos o MENOR contorno que abriga o ponto
-    if seed_point is not None and len(contours) > 0:
-        sp_small = (seed_point[0] * scale, seed_point[1] * scale)
-        
+    # Se os seed points estiverem disponíveis, achamos os contornos que os abrigam
+    if seed_points is not None and len(contours) > 0:
         valid_contours = []
         img_area = gray_small.shape[0] * gray_small.shape[1]
         for c in contours:
-            # pointPolygonTest retorna >= 0 se o ponto está dentro ou na borda do contorno
-            if cv2.pointPolygonTest(c, sp_small, False) >= 0:
-                area = cv2.contourArea(c)
-                # Adicionamos uma área mínima para não pegar ruídos de 1 pixel
-                # E área máxima (15% da imagem) para excluir a placa de MDF inteira
-                if 100 < area < (img_area * 0.15):
+            area = cv2.contourArea(c)
+            # Adicionamos uma área mínima para não pegar ruídos de 1 pixel
+            # E área máxima (25% da imagem) para excluir a placa de MDF inteira
+            if 100 < area < (img_area * 0.25):
+                # Verifica se ESSE contorno abriga ALGUMA das sementes
+                contains_seed = False
+                for sp in seed_points:
+                    sp_small = (sp[0] * scale, sp[1] * scale)
+                    if cv2.pointPolygonTest(c, sp_small, False) >= 0:
+                        contains_seed = True
+                        break
+                
+                if contains_seed:
                     valid_contours.append((area, c))
                 
         if valid_contours:
-            # Ordena de forma DECRESCENTE para pegar o MAIOR contorno do objeto.
-            # Isso garante que a linha capturada seja a aresta externa (base da peça no MDF)
-            # e não a aresta interna (teto da peça volumétrica).
+            # Ordena de forma DECRESCENTE para pegar os maiores contornos
             valid_contours.sort(key=lambda x: x[0], reverse=True)
-            best_contour = valid_contours[0][1]
-            cv2.drawContours(mask_small, [best_contour], -1, 255, -1)
-            logger.debug(f"  Edges: Contorno externo validado pelo clique (área={valid_contours[0][0]:.1f}).")
+            for area, best_contour in valid_contours:
+                cv2.drawContours(mask_small, [best_contour], -1, 255, -1)
+            logger.debug(f"  Edges: {len(valid_contours)} contorno(s) validados pelo(s) clique(s).")
         else:
             # Se não achou, recai sobre o maior contorno da imagem inteira como fallback
             c = max(contours, key=cv2.contourArea)
             cv2.drawContours(mask_small, [c], -1, 255, -1)
-            logger.debug("  Edges: Seed point fora de qualquer contorno válido. Fallback para maior contorno.")
+            logger.debug("  Edges: Seed points fora de qualquer contorno válido. Fallback para maior contorno.")
     elif len(contours) > 0:
         c = max(contours, key=cv2.contourArea)
         cv2.drawContours(mask_small, [c], -1, 255, -1)
@@ -683,8 +686,10 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
     corner_angle_3 = 0.0
     corners_px = []
     corner_angles = []
+    corner_indices = []
+    corner_radii_px = []
 
-    if circularity <= 0.80:
+    if circularity <= 0.90:
         try:
             # 1. Obter os 4 cantos do min_rect
             box = cv2.boxPoints(min_rect)
@@ -699,6 +704,7 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
                 dists = np.linalg.norm(contour[:, 0] - pt, axis=1)
                 idx = np.argmin(dists)
                 corners_px.append(contour[idx, 0])
+                corner_indices.append(idx)
                 
             # 3. Calcular os ângulos internos
             n = len(corners_px)
@@ -722,6 +728,51 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
                     corner_angles.append(90.0)
             
             if len(corner_angles) == 4:
+                corner_angle_0 = corner_angles[0]
+                corner_angle_1 = corner_angles[1]
+                corner_angle_2 = corner_angles[2]
+                corner_angle_3 = corner_angles[3]
+                
+            # 4. Calcular raio de curvatura nas quinas
+            target_dist_px = perimeter_px * 0.03  # Usar pontos a 3% do perímetro da quina
+            n_pts = len(contour)
+            for idx in corner_indices:
+                # Encontrar ponto antes
+                dist_prev = 0
+                idx_prev = idx
+                while dist_prev < target_dist_px:
+                    next_idx = (idx_prev - 1) % n_pts
+                    dist_prev += np.linalg.norm(contour[next_idx, 0] - contour[idx_prev, 0])
+                    idx_prev = next_idx
+                    if dist_prev > target_dist_px * 3: break # fallback
+                    
+                # Encontrar ponto depois
+                dist_next = 0
+                idx_next = idx
+                while dist_next < target_dist_px:
+                    next_idx = (idx_next + 1) % n_pts
+                    dist_next += np.linalg.norm(contour[next_idx, 0] - contour[idx_next, 0])
+                    idx_next = next_idx
+                    if dist_next > target_dist_px * 3: break
+                
+                p1 = contour[idx_prev, 0]
+                p2 = contour[idx, 0]
+                p3 = contour[idx_next, 0]
+                
+                a = np.linalg.norm(p2 - p1)
+                b = np.linalg.norm(p3 - p2)
+                c = np.linalg.norm(p1 - p3)
+                
+                s = (a + b + c) / 2
+                area_sq = s * (s - a) * (s - b) * (s - c)
+                if area_sq > 0:
+                    area = np.sqrt(area_sq)
+                    radius = (a * b * c) / (4 * area)
+                    # Limite de sanidade (raio não pode ser maior que a metade da peça)
+                    max_radius = min(rect_w, rect_h)
+                    corner_radii_px.append(min(radius, max_radius))
+                else:
+                    corner_radii_px.append(0.0)
                 corner_angle_0 = corner_angles[0]
                 corner_angle_1 = corner_angles[1]
                 corner_angle_2 = corner_angles[2]
@@ -762,10 +813,12 @@ def extract_contour_metrics(contour: np.ndarray) -> dict:
         # Vértices e ângulos
         "corners_px": [list(pt) for pt in corners_px] if corners_px else None,
         "corner_angles": corner_angles if corner_angles else None,
+        # Geometria (se for retangular)
         "corner_angle_0": corner_angle_0,
         "corner_angle_1": corner_angle_1,
         "corner_angle_2": corner_angle_2,
         "corner_angle_3": corner_angle_3,
+        "corner_radius_px": float(np.mean(corner_radii_px)) if corner_radii_px else 0.0,
         # Contorno original (para desenho e conversão)
         "contour": contour,
         "hull": hull,
@@ -876,7 +929,7 @@ def compute_cross_sections(
         Retorna None se o contorno for insuficiente.
     """
     if positions is None:
-        positions = [0.20, 0.50, 0.80]
+        positions = [i / 100.0 for i in range(0, 101, 5)]
 
     center, (rect_w, rect_h), angle = min_rect
 
@@ -1111,7 +1164,7 @@ def _preprocess_mdf_background(
     gray_blurred: np.ndarray,
     image_color: np.ndarray,
     calibration_corners: np.ndarray = None,
-    seed_point: tuple = None
+    seed_points: list = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Detecta fundo de mesa branco ao redor da placa MDF e remove a borda queimada a laser.
@@ -1170,10 +1223,11 @@ def _preprocess_mdf_background(
     # Detectar o fundo branco da mesa
     _, thresh = cv2.threshold(gray_blurred, 210, 255, cv2.THRESH_BINARY)
     
-    # Proteger região ao redor do seed_point (evita mascarar peças claras como caulim)
-    if seed_point is not None:
-        protection_radius = max(50, int(min(gray_blurred.shape[:2]) * 0.15))
-        cv2.circle(thresh, seed_point, protection_radius, 0, -1)
+    # Proteger região ao redor do seed_points (evita mascarar peças claras como caulim)
+    if seed_points is not None:
+        for sp in seed_points:
+            protection_radius = max(50, int(min(gray_blurred.shape[:2]) * 0.15))
+            cv2.circle(thresh, sp, protection_radius, 0, -1)
     
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -1236,7 +1290,7 @@ def segment(
     save_mask: bool = True,
     masks_dir: str = None,
     calibration_corners: np.ndarray = None,
-    seed_point: tuple = None,
+    seed_points: list = None,
     mdf_point: tuple = None
 ) -> list:
     """
@@ -1267,22 +1321,26 @@ def segment(
     logger.info(f"  Segmentando '{image_name}' (estratégia: {strategy})")
 
     # Pré-processamento: isolar MDF e limpar o fundo / borda queimada a laser / bloco calib
-    gray_blurred, image_color = _preprocess_mdf_background(gray_blurred, image_color, calibration_corners, seed_point)
+    gray_blurred, image_color = _preprocess_mdf_background(gray_blurred, image_color, calibration_corners, seed_points)
 
     # Determinar se a peça é mais clara que o fundo usando os seed points
     piece_is_lighter = False
-    if seed_point is not None and mdf_point is not None:
+    if seed_points is not None and len(seed_points) > 0 and mdf_point is not None:
         gray_for_brightness = cv2.cvtColor(image_color, cv2.COLOR_BGR2GRAY) if len(image_color.shape) == 3 else gray_blurred
         # Amostrar patch 31x31 ao redor de cada ponto
         patch_r = 15
         h_img, w_img = gray_for_brightness.shape[:2]
         
-        px, py = seed_point
-        y1p = max(0, py - patch_r)
-        y2p = min(h_img, py + patch_r + 1)
-        x1p = max(0, px - patch_r)
-        x2p = min(w_img, px + patch_r + 1)
-        piece_brightness = float(np.mean(gray_for_brightness[y1p:y2p, x1p:x2p]))
+        piece_brightness_sum = 0
+        for sp in seed_points:
+            px, py = sp
+            y1p = max(0, py - patch_r)
+            y2p = min(h_img, py + patch_r + 1)
+            x1p = max(0, px - patch_r)
+            x2p = min(w_img, px + patch_r + 1)
+            piece_brightness_sum += float(np.mean(gray_for_brightness[y1p:y2p, x1p:x2p]))
+            
+        piece_brightness = piece_brightness_sum / len(seed_points)
         
         mx, my = mdf_point
         y1m = max(0, my - patch_r)
@@ -1303,22 +1361,32 @@ def segment(
         # Tentar cada estratégia na ordem de preferência
         strategies_to_try = []
 
+        # 1. Se o usuário forneceu sementes, watershed_seeded é a melhor opção disparada.
+        if seed_points is not None and len(seed_points) > 0 and mdf_point is not None:
+            strategies_to_try.append(("watershed_seeded", None))
+            strategies_to_try.append(("grabcut_seeded", None))
+
+        # 2. Se sabemos conclusivamente a cor relativa da peça pelas sementes,
+        # e watershed falhou ou não estava disponível, tentamos thresholds globais.
+        if piece_is_lighter:
+            strategies_to_try.append(("otsu", None))
+            strategies_to_try.append(("lab", None))
+        else:
+            strategies_to_try.append(("otsu_dark", None))
+
+        # 3. Estratégia dedicada para argila (útil se as peças são muito escuras ou soltam muito pó)
         if getattr(config, "MATERIAL_TYPE", "Argila") == "Argila":
             strategies_to_try.append(("edges", None))
 
-        if seed_point is not None and mdf_point is not None:
-            # Watershed resolve maravilhosamente bem o problema de peças com sombras
-            # e núcleos com cor idêntica ao fundo, baseando-se em gradientes.
-            strategies_to_try.append(("watershed_seeded", None))
-
+        # 4. Background subtraction
         if background is not None:
             strategies_to_try.append(("background_sub", background))
         
-        # Agora que temos piece_is_lighter determinado por sementes dinâmicas,
-        # otsu_dark / otsu se tornam extremamente robustos para qualquer cor (clara ou escura)
-        strategies_to_try.append(("otsu_dark", None))
-        strategies_to_try.append(("lab", None))
-        strategies_to_try.append(("otsu", None))
+        # 5. Fallbacks finais
+        if not piece_is_lighter:
+            strategies_to_try.append(("otsu", None))
+        else:
+            strategies_to_try.append(("otsu_dark", None))
 
         for strat_name, bg in strategies_to_try:
             logger.debug(f"  Auto: tentando '{strat_name}'...")
@@ -1326,7 +1394,7 @@ def segment(
                 candidate_mask = _apply_strategy(
                     strat_name, gray_blurred, image_color, bg,
                     piece_is_lighter=piece_is_lighter,
-                    seed_point=seed_point,
+                    seed_points=seed_points,
                     mdf_point=mdf_point,
                     calibration_corners=calibration_corners
                 )
@@ -1357,12 +1425,34 @@ def segment(
         mask = _apply_strategy(
             strategy, gray_blurred, image_color, background,
             piece_is_lighter=piece_is_lighter,
-            seed_point=seed_point,
+            seed_points=seed_points,
             mdf_point=mdf_point,
             calibration_corners=calibration_corners
         )
         mask = check_and_correct_inversion(mask)
         mask = postprocess_mask(mask)
+
+    # Separação forçada para múltiplas peças.
+    if seed_points is not None and len(seed_points) > 1:
+        # 1. Corte vertical (peças separadas horizontalmente, ex: vista frontal/lateral)
+        sp_sorted_x = sorted(seed_points, key=lambda p: p[0])
+        for i in range(len(sp_sorted_x) - 1):
+            x1, y1 = sp_sorted_x[i]
+            x2, y2 = sp_sorted_x[i+1]
+            if (x2 - x1) > min(mask.shape[1] * 0.05, 30):
+                mid_x = int((x1 + x2) / 2)
+                cv2.line(mask, (mid_x, 0), (mid_x, mask.shape[0]), 0, thickness=10)
+                logger.debug(f"  [Separação] Corte vertical aplicado no X={mid_x} para isolar sementes.")
+
+        # 2. Corte horizontal (peças separadas verticalmente, ex: vista superior)
+        sp_sorted_y = sorted(seed_points, key=lambda p: p[1])
+        for i in range(len(sp_sorted_y) - 1):
+            x1, y1 = sp_sorted_y[i]
+            x2, y2 = sp_sorted_y[i+1]
+            if (y2 - y1) > min(mask.shape[0] * 0.05, 30):
+                mid_y = int((y1 + y2) / 2)
+                cv2.line(mask, (0, mid_y), (mask.shape[1], mid_y), 0, thickness=10)
+                logger.debug(f"  [Separação] Corte horizontal aplicado no Y={mid_y} para isolar sementes.")
 
     # Detectar contornos
     contours, _ = cv2.findContours(
@@ -1385,7 +1475,7 @@ def segment(
         perimeter = cv2.arcLength(c, True)
         circularity = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
         
-        if circularity < 0.05 or aspect_ratio > 5.0 or (area >= config.MAX_CONTOUR_AREA_PROPORTION * total_pixels and area >= 150000):
+        if circularity < 0.05 or aspect_ratio > 10.0 or (area >= config.MAX_CONTOUR_AREA_PROPORTION * total_pixels and area >= 150000):
             logger.info(
                 f"  Descartando contorno ruidoso/muito grande: área={area:.0f} px², "
                 f"bbox={w}x{h} px, circularidade={circularity:.3f}, aspect_ratio={aspect_ratio:.2f}"
@@ -1410,28 +1500,62 @@ def segment(
             refined_contours.append(c)
     valid_contours = refined_contours
 
-    # Filtrar contornos pelo seed_point: se disponível, priorizar o que contém o seed
-    if seed_point is not None and len(valid_contours) > 1:
+    # Filtrar contornos pelo seed_points: se disponível, reter apenas os que contêm sementes
+    if seed_points is not None and len(seed_points) > 0:
         containing = []
-        not_containing = []
         for c in valid_contours:
-            if cv2.pointPolygonTest(c, (float(seed_point[0]), float(seed_point[1])), False) >= 0:
+            contains = False
+            for sp in seed_points:
+                if cv2.pointPolygonTest(c, (float(sp[0]), float(sp[1])), False) >= 0:
+                    contains = True
+                    break
+            if contains:
                 containing.append(c)
-            else:
-                not_containing.append(c)
         if containing:
-            logger.info(f"  [Seed] {len(containing)} contorno(s) contém o ponto-semente. Priorizando.")
-            valid_contours = containing + not_containing
+            logger.info(f"  [Seed] {len(containing)} contorno(s) contém ponto-semente. Retendo apenas eles.")
+            valid_contours = containing
 
-    # Ordenar contornos: priorizar o que tem melhor score (área × proximidade do centro)
-    if len(valid_contours) > 0:
+    # Ordenar contornos: se tivermos seed_points, ordenamos os contornos na EXATA ORDEM das sementes!
+    if seed_points is not None and len(seed_points) > 0:
+        ordered_contours = []
+        for sp in seed_points:
+            best_c = None
+            best_dist = float('inf')
+            sp_x, sp_y = float(sp[0]), float(sp[1])
+            
+            # 1. Tentar achar um contorno que de fato contenha a semente
+            containing_contours = []
+            for c in valid_contours:
+                if cv2.pointPolygonTest(c, (sp_x, sp_y), False) >= 0:
+                    containing_contours.append(c)
+                    
+            if containing_contours:
+                best_c = max(containing_contours, key=cv2.contourArea)
+            else:
+                # Fallback: pegar o contorno mais próximo usando pointPolygonTest
+                for c in valid_contours:
+                    dist = abs(cv2.pointPolygonTest(c, (sp_x, sp_y), True))
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_c = c
+            
+            # Se não achou ou está muito distante, gerar dummy
+            if best_c is None or (best_dist > 300 and not containing_contours):
+                logger.warning(f"  [Seed] Semente ({sp_x}, {sp_y}) sem contorno próximo. Gerando contorno dummy.")
+                best_c = create_dummy_contour(int(sp_x), int(sp_y))
+                
+            ordered_contours.append(best_c)
+            
+        valid_contours = ordered_contours
+        logger.info(f"  Contornos ordenados restritamente pela ordem das {len(seed_points)} sementes do usuário (Total: {len(valid_contours)}).")
+
+    elif len(valid_contours) > 0:
+        # Fallback para o comportamento padrão sem sementes
         h, w = mask.shape[:2]
         cx_img, cy_img = w // 2, h // 2
         max_dist = np.sqrt(cx_img ** 2 + cy_img ** 2)
-        
-        # Se temos seed_point, usar ele como referência de centralidade
-        ref_x = float(seed_point[0]) if seed_point is not None else cx_img
-        ref_y = float(seed_point[1]) if seed_point is not None else cy_img
+        ref_x = float(cx_img)
+        ref_y = float(cy_img)
         
         def get_contour_score(c):
             area = cv2.contourArea(c)
@@ -1486,9 +1610,161 @@ def segment(
     return results
 
 
+def create_dummy_contour(cx: int, cy: int) -> np.ndarray:
+    """Cria um contorno retangular dummy de 10x10 pixels centralizado em (cx, cy)."""
+    return np.array([
+        [[cx - 5, cy - 5]],
+        [[cx + 5, cy - 5]],
+        [[cx + 5, cy + 5]],
+        [[cx - 5, cy + 5]]
+    ], dtype=np.int32)
+
+
+def segment_seeded_threshold(
+    image: np.ndarray,
+    seed_points: list | tuple,
+    mdf_point: tuple,
+    piece_is_lighter: bool = None,
+    max_dim: int = 1200
+) -> np.ndarray:
+    """
+    Segmentação por threshold dinâmico com base em sementes de cor do objeto e MDF.
+    Pode receber imagem BGR ou cinza, e sementes em formato de lista ou tupla única.
+    """
+    if isinstance(seed_points, tuple):
+        seed_points = [seed_points]
+        
+    h_orig, w_orig = image.shape[:2]
+    
+    # Calcular escala de redimensionamento
+    scale = 1.0
+    if max(h_orig, w_orig) > max_dim:
+        scale = max_dim / max(h_orig, w_orig)
+        
+    if scale < 1.0:
+        img_small = cv2.resize(image, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        sps = [(int(sp[0] * scale), int(sp[1] * scale)) for sp in seed_points]
+        mp = (int(mdf_point[0] * scale), int(mdf_point[1] * scale))
+    else:
+        img_small = image.copy()
+        sps = seed_points
+        mp = mdf_point
+        
+    h_small, w_small = img_small.shape[:2]
+    
+    # Determinar se a imagem é colorida
+    is_color = len(img_small.shape) == 3 and img_small.shape[2] == 3
+    
+    if is_color:
+        gray = cv2.cvtColor(img_small, cv2.COLOR_BGR2GRAY)
+        lab = cv2.cvtColor(img_small, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        channels = [gray, l_ch, a_ch, b_ch]
+        channel_names = ["Cinza", "LAB_L", "LAB_A", "LAB_B"]
+    else:
+        gray = img_small
+        channels = [gray]
+        channel_names = ["Cinza"]
+        
+    # Escolher o melhor canal comparando a diferença entre as sementes da peça e do MDF
+    best_channel_idx = 0
+    best_diff = -1.0
+    best_threshold = 127
+    best_piece_is_lighter = True
+    
+    # Ajustar raio de amostragem proporcionalmente ao tamanho reduzido
+    patch_r = max(3, int(min(h_small, w_small) * 0.01))
+    
+    for ch_idx, ch in enumerate(channels):
+        piece_vals = []
+        for sp in sps:
+            px, py = sp
+            y1 = max(0, py - patch_r)
+            y2 = min(h_small, py + patch_r + 1)
+            x1 = max(0, px - patch_r)
+            x2 = min(w_small, px + patch_r + 1)
+            piece_vals.append(np.mean(ch[y1:y2, x1:x2]))
+        piece_avg = np.mean(piece_vals)
+        
+        mx, my = mp
+        y1 = max(0, my - patch_r)
+        y2 = min(h_small, my + patch_r + 1)
+        x1 = max(0, mx - patch_r)
+        x2 = min(w_small, mx + patch_r + 1)
+        mdf_avg = np.mean(ch[y1:y2, x1:x2])
+        
+        diff = abs(piece_avg - mdf_avg)
+        if diff > best_diff:
+            best_diff = diff
+            best_channel_idx = ch_idx
+            best_threshold = (piece_avg + mdf_avg) / 2.0
+            best_piece_is_lighter = piece_avg > mdf_avg
+            
+    ch_best = channels[best_channel_idx]
+    
+    # Se o chamador especificou piece_is_lighter, respeitar
+    if piece_is_lighter is not None:
+        best_piece_is_lighter = piece_is_lighter
+        
+    logger.info(f"  [Seeded Threshold] Canal: {channel_names[best_channel_idx]} (contraste: {best_diff:.1f}, limiar: {best_threshold:.1f}, peça_mais_clara: {best_piece_is_lighter})")
+    
+    if best_diff < 5.0:
+        logger.warning("  [Seeded Threshold] Contraste muito baixo. Usando Otsu de fallback.")
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        if best_piece_is_lighter:
+            _, thresh = cv2.threshold(ch_best, int(best_threshold), 255, cv2.THRESH_BINARY)
+        else:
+            _, thresh = cv2.threshold(ch_best, int(best_threshold), 255, cv2.THRESH_BINARY_INV)
+            
+    # Fechamento morfológico para fechar as ranhuras internas da peça
+    close_sz = max(15, int(min(h_small, w_small) * 0.025))
+    if close_sz % 2 == 0:
+        close_sz += 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_sz, close_sz))
+    thresh_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    # Encontrar os contornos da máscara binária
+    contours, _ = cv2.findContours(thresh_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    min_area = max(100, int(config.MIN_CONTOUR_AREA_PX * (scale ** 2) / 4))
+    valid_candidates = [c for c in contours if cv2.contourArea(c) > min_area]
+    if not valid_candidates:
+        valid_candidates = contours
+        
+    # Criar uma máscara final contendo APENAS os contornos que estão associados às sementes
+    mask_small = np.zeros_like(thresh)
+    for sp in sps:
+        sp_pt = (float(sp[0]), float(sp[1]))
+        best_c = None
+        best_score = -float('inf')
+        
+        for c in valid_candidates:
+            score = cv2.pointPolygonTest(c, sp_pt, True)
+            if score > best_score:
+                best_score = score
+                best_c = c
+                
+        if best_c is not None:
+            cv2.drawContours(mask_small, [best_c], -1, 255, -1)
+            
+    # Upsampling da máscara
+    if scale < 1.0:
+        mask = cv2.resize(mask_small, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        blur_size = max(3, int(1 / scale) * 2 + 1)
+        if blur_size % 2 == 0:
+            blur_size += 1
+        mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    else:
+        mask = mask_small
+        
+    return mask
+
+
 def segment_watershed_seeded(
     image_color: np.ndarray,
-    seed_point: tuple,
+    seed_points: list,
     mdf_point: tuple,
     max_dim: int = 1000,
     calibration_corners: np.ndarray = None
@@ -1515,34 +1791,36 @@ def segment_watershed_seeded(
         
     h_small, w_small = img_small.shape[:2]
     
-    # Bilateral Filter: suaviza a granulação do MDF sem destruir (borrar) as bordas físicas!
-    # Isso impede que o gradiente da peça se expanda para a sombra.
+    # Bilateral Filter: preserva as bordas externas enquanto suaviza levemente o MDF
     img_small = cv2.bilateralFilter(img_small, 9, 75, 75)
     
-    # Sementes redimensionadas
-    sp = (int(seed_point[0] * scale), int(seed_point[1] * scale))
+    # Suavização moderada para ajudar a mesclar as trilhas internas, mas sem vazar a borda.
+    img_small = cv2.GaussianBlur(img_small, (9, 9), 0)
+    
     mp = (int(mdf_point[0] * scale), int(mdf_point[1] * scale))
+    # Sementes redimensionadas
     seed_radius = max(5, int(min(h_small, w_small) * 0.015))
     
     # Marcadores para o Watershed:
     # 0 = Desconhecido (onde o algoritmo vai decidir)
-    # 1 = Foreground (Peça)
-    # 2 = Background (MDF)
+    # 1 a N = Foreground (Peças independentes, para forçar separação entre elas)
+    # N+1 = Background garantido (MDF e bordas)
     markers = np.zeros((h_small, w_small), dtype=np.int32)
+    bg_marker = len(seed_points) + 1
     
-    # Marcar foreground (1) no ponto da peça
-    cv2.circle(markers, sp, seed_radius, 1, -1)
+    # Marcar foreground (IDs únicos) nos pontos das peças
+    for i, sp in enumerate(seed_points):
+        s_pt = (int(sp[0] * scale), int(sp[1] * scale))
+        cv2.circle(markers, s_pt, seed_radius, i + 1, -1)
     
-    # Marcar background (2) no ponto do MDF
-    cv2.circle(markers, mp, seed_radius * 2, 2, -1)
+    # Marcar background no ponto do MDF
+    cv2.circle(markers, mp, seed_radius * 2, bg_marker, -1)
     
-    # Marcar bordas da imagem como background garantido (2)
-    border_w = max(5, int(w_small * 0.02))
-    border_h = max(5, int(h_small * 0.02))
-    markers[:border_h, :] = 2
-    markers[-border_h:, :] = 2
-    markers[:, :border_w] = 2
-    markers[:, -border_w:] = 2
+    # ATENÇÃO: NÃO marcar as bordas da imagem como background! 
+    # Como as peças podem estar próximas à borda superior ou inferior,
+    # se a borda for marcada como background garantido, o Watershed fará o background "invadir" a peça
+    # pelas ranhuras internas antes da semente da peça conseguir se expandir até a ponta!
+    # Apenas a semente do MDF já é suficiente para inundar todo o background.
     
     # Marcar bloco de calibração como background garantido (2)
     if calibration_corners is not None:
@@ -1551,16 +1829,17 @@ def segment_watershed_seeded(
             if scale < 1.0:
                 hull = (hull * scale).astype(np.int32)
             # Preencher o casco convexo como background
-            cv2.drawContours(markers, [hull], -1, 2, -1)
+            cv2.drawContours(markers, [hull], -1, bg_marker, -1)
         except Exception as e:
             logger.warning(f"  Watershed: Erro ao marcar calibração: {e}")
             
     # Executar Watershed (modifica a matriz 'markers' inplace)
     cv2.watershed(img_small, markers)
     
-    # Criar máscara binária apenas da área classificada como 1 (Foreground)
+    # Criar máscara binária apenas das áreas classificadas como Foreground (IDs 1 a N)
     mask_small = np.zeros((h_small, w_small), dtype=np.uint8)
-    mask_small[markers == 1] = 255
+    for i in range(len(seed_points)):
+        mask_small[markers == (i + 1)] = 255
     
     # Upsampling da máscara
     if scale < 1.0:
@@ -1583,30 +1862,30 @@ def _apply_strategy(
     image_color: np.ndarray,
     background: np.ndarray = None,
     piece_is_lighter: bool = False,
-    seed_point: tuple = None,
+    seed_points: list = None,
     mdf_point: tuple = None,
     calibration_corners: np.ndarray = None
 ) -> np.ndarray:
     """Aplica uma estratégia de segmentação específica."""
     if strategy == "watershed_seeded":
-        if seed_point is None or mdf_point is None:
-            raise ValueError("Estratégia 'watershed_seeded' requer seed_point e mdf_point.")
+        if seed_points is None or len(seed_points) == 0 or mdf_point is None:
+            raise ValueError("Estratégia 'watershed_seeded' requer seed_points e mdf_point.")
         return segment_watershed_seeded(
-            image_color, seed_point, mdf_point,
+            image_color, seed_points, mdf_point,
             calibration_corners=calibration_corners
         )
 
     elif strategy == "grabcut_seeded":
-        if seed_point is None or mdf_point is None:
-            raise ValueError("Estratégia 'grabcut_seeded' requer seed_point e mdf_point.")
+        if seed_points is None or len(seed_points) == 0 or mdf_point is None:
+            raise ValueError("Estratégia 'grabcut_seeded' requer seed_points e mdf_point.")
         return segment_grabcut_seeded(
-            image_color, seed_point, mdf_point,
+            image_color, seed_points, mdf_point,
             iterations=5, max_dim=1000,
             calibration_corners=calibration_corners
         )
 
     elif strategy == "edges":
-        return segment_edges(gray_blurred, seed_point, calibration_corners)
+        return segment_edges(gray_blurred, seed_points, calibration_corners)
 
     elif strategy == "background_sub":
         if background is None:

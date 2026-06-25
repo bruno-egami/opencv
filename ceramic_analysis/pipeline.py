@@ -366,16 +366,16 @@ def cmd_process(args):
                         }
 
                     # 2. Coleta de seed points (peça + MDF) para segmentação
-                    seed_point = None
+                    seed_points = []
                     mdf_point = None
                     if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
-                        logger.info(f"  [Seed] Solicitando identificação da peça e fundo...")
-                        seed_point, mdf_point = interactive.get_seed_points(
+                        logger.info(f"  [Seed] Solicitando identificação das pecas e fundo...")
+                        seed_points, mdf_point = interactive.get_seed_points(
                             color,
-                            window_title=f"Identificar Peca e Fundo - {img_path.name}"
+                            window_title=f"Identificar Pecas e Fundo - {img_path.name}"
                         )
-                        if seed_point is not None and mdf_point is not None:
-                            logger.info(f"  [Seed] Peça=({seed_point[0]},{seed_point[1]}), MDF=({mdf_point[0]},{mdf_point[1]})")
+                        if len(seed_points) > 0 and mdf_point is not None:
+                            logger.info(f"  [Seed] {len(seed_points)} peças marcadas, MDF=({mdf_point[0]},{mdf_point[1]})")
                         else:
                             logger.warning("  [Seed] Seed points não fornecidos. Segmentação sem seeds.")
 
@@ -385,11 +385,20 @@ def cmd_process(args):
                         background=background,
                         strategy=args.strategy,
                         calibration_corners=corners,
-                        seed_point=seed_point,
+                        seed_points=seed_points,
                         mdf_point=mdf_point
                     )
 
-                    # Ajuste manual interativo do contorno principal
+                    # Ordenar contornos pela posição X (esquerda para a direita) apenas se não houver sementes
+                    if not seed_points or len(seed_points) == 0:
+                        seg_results.sort(key=lambda x: x.get("bbox_x", 0))
+
+                    # Atribuir IDs sistemáticos baseados na ordenação
+                    for i, metrics in enumerate(seg_results):
+                        metrics["contour_index"] = i
+                        metrics["image_name"] = img_path.stem
+
+                    # Ajuste manual interativo iterativo
                     import sys
                     is_testing = "pytest" in sys.modules
                     logger.info(
@@ -397,27 +406,29 @@ def cmd_process(args):
                         f"is_testing={is_testing}"
                     )
                     if len(seg_results) > 0 and getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
-                        primary_metrics = seg_results[0]
-                        adjusted_contour, was_adjusted = interactive.adjust_contour(
-                            color,
-                            primary_metrics["contour"],
-                            window_title=f"Ajuste Manual - {img_path.name}"
-                        )
-                        if was_adjusted:
-                            logger.info(f"  → Contorno ajustado manualmente para {img_path.name}")
-                            # Recalcular métricas para o contorno ajustado
-                            new_metrics = segmentation.extract_contour_metrics(adjusted_contour)
-                            new_metrics["contour_index"] = primary_metrics.get("contour_index", 0)
-                            new_metrics["image_name"] = primary_metrics.get("image_name", img_path.stem)
-                            seg_results[0] = new_metrics
+                        for i in range(len(seg_results)):
+                            primary_metrics = seg_results[i]
+                            adjusted_contour, was_adjusted = interactive.adjust_contour(
+                                color,
+                                primary_metrics["contour"],
+                                window_title=f"Ajuste Manual P{i+1}/{len(seg_results)} - {img_path.name}"
+                            )
+                            if was_adjusted:
+                                logger.info(f"  → Contorno P{i+1} ajustado manualmente para {img_path.name}")
+                                # Recalcular métricas para o contorno ajustado
+                                new_metrics = segmentation.extract_contour_metrics(adjusted_contour)
+                                new_metrics["contour_index"] = i
+                                new_metrics["image_name"] = img_path.stem
+                                seg_results[i] = new_metrics
 
                     # 3. Converter para mm e coletar resultados
+                    all_metrics_mm = []
                     for metrics_px in seg_results:
                         metrics_mm = metrology.convert_measurements(metrics_px, scale)
                         
-                        # Se houver múltiplos contornos, adicionar sufixo para evitar colisão de chaves
+                        # Se houver múltiplos contornos, adicionar sufixo (1-indexed)
                         if len(seg_results) > 1:
-                            metrics_mm["sample_id"] = f"{sample_id}_{metrics_px['contour_index']}"
+                            metrics_mm["sample_id"] = f"{sample_id}_P{metrics_px['contour_index'] + 1}"
                         else:
                             metrics_mm["sample_id"] = sample_id
                             
@@ -427,17 +438,18 @@ def cmd_process(args):
                         metrics_mm["source_file"] = img_path.name
 
                         all_results.append(metrics_mm)
+                        all_metrics_mm.append(metrics_mm)
 
-                        # 4. Anotar imagem (apenas para o contorno principal de maior score)
-                        if not args.no_annotate and metrics_px == seg_results[0]:
-                            ann_dir = Path(config.OUTPUT_DIR) / args.session / "annotated" / view / state
-                            ann_path = ann_dir / f"{img_path.stem}_annotated.png"
-                            draw_ellipse = metrics_mm.get("circularity", 0) > 0.80
-                            analysis.annotate_image(
-                                color, metrics_mm, str(ann_path),
-                                scale=scale,
-                                draw_ellipse=draw_ellipse
-                            )
+                    # 4. Anotar imagem com TODAS as peças na mesma imagem final
+                    if not args.no_annotate and len(all_metrics_mm) > 0:
+                        ann_dir = Path(config.OUTPUT_DIR) / args.session / "annotated" / view / state
+                        ann_path = ann_dir / f"{img_path.stem}_annotated.png"
+                        # Desabilitar dim_background nas chamadas individuais, exceto se refatorarmos annotate_image.
+                        # Para evitar escurecer N vezes, enviamos a lista completa para uma nova função
+                        analysis.annotate_image_multiple(
+                            color, all_metrics_mm, str(ann_path),
+                            scale=scale
+                        )
 
                 except (segmentation.SegmentationError, Exception) as e:
                     logger.error(f"  ✗ Falha ao processar {img_path.name}: {e}")

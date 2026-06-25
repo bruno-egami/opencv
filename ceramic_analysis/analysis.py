@@ -429,6 +429,11 @@ def annotate_image(
     # Contorno
     if draw_contour and "contour" in metrics:
         cv2.drawContours(annotated, [metrics["contour"]], -1, COLOR_CONTOUR, 2)
+            
+        if "corners_px" in metrics and metrics["corners_px"]:
+            corners = np.array(metrics["corners_px"], dtype=np.int32)
+            for pt in corners:
+                cv2.circle(annotated, tuple(pt), 4, COLOR_BBOX, -1)
 
     # Bounding box Rotacionado (Substitui o BBox upright)
     if draw_bbox and "min_rect_w" in metrics:
@@ -442,17 +447,6 @@ def annotate_image(
         box = cv2.boxPoints((center, size, angle))
         box = np.int32(box)
         cv2.drawContours(annotated, [box], 0, COLOR_BBOX, 2)
-        
-        # Opcional: Desenhar os ângulos internos se disponíveis
-        if "corner_angle_0" in metrics and metrics.get("corner_angle_0", 0) > 0:
-            corners = metrics.get("corners_px", box)
-            if corners is not None and len(corners) == 4:
-                for i in range(4):
-                    pt = tuple(int(x) for x in corners[i])
-                    angle_val = metrics.get(f"corner_angle_{i}", 90.0)
-                    cv2.putText(annotated, f"{angle_val:.1f}o", 
-                               (pt[0] - 20, pt[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 
-                               font_scale * 0.8, COLOR_BBOX, thickness)
 
     # Elipse
     if draw_ellipse and metrics.get("ellipse_major_px", 0) > 0:
@@ -538,28 +532,12 @@ def annotate_image(
                 if abs(len_mm - major_mm) <= abs(len_mm - minor_mm):
                     # Edge de comprimento (Length)
                     if not drawn_length:
-                        if "cross_length_20pct_mm" in metrics:
-                            texts = [
-                                f"{metrics['cross_length_20pct_mm']:.2f} mm",
-                                f"{metrics['cross_length_50pct_mm']:.2f} mm",
-                                f"{metrics['cross_length_80pct_mm']:.2f} mm"
-                            ]
-                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
-                        else:
-                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
+                        _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
                         drawn_length = True
                 else:
                     # Edge de largura (Width)
                     if not drawn_width:
-                        if "cross_width_20pct_mm" in metrics:
-                            texts = [
-                                f"{metrics['cross_width_20pct_mm']:.2f} mm",
-                                f"{metrics['cross_width_50pct_mm']:.2f} mm",
-                                f"{metrics['cross_width_80pct_mm']:.2f} mm"
-                            ]
-                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, custom_texts=texts, offset_multiplier=2.0)
-                        else:
-                            _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
+                        _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
                         drawn_width = True
         elif "bbox_x" in metrics and "bbox_y" in metrics and "bbox_w" in metrics and "bbox_h" in metrics:
             x, y = metrics["bbox_x"], metrics["bbox_y"]

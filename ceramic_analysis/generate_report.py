@@ -9,10 +9,84 @@ import json
 import logging
 import webbrowser
 from pathlib import Path
+import numpy as np
+import matplotlib
+matplotlib.use('Agg') # Backend non-interactive
+import matplotlib.pyplot as plt
 
 import config
 
 logger = logging.getLogger(__name__)
+
+def _aggregate(measurements_list, key):
+    vals = []
+    for m in measurements_list:
+        val_str = m.get(key, 0.0)
+        if val_str == "":
+            val_str = 0.0
+        val = float(val_str)
+        if val > 0:
+            vals.append(val)
+    if not vals:
+        return 0.0, 0.0, 0
+    return np.mean(vals), np.std(vals), len(vals)
+
+def _format_stat(mean, std, n, unit="mm"):
+    if n > 1:
+        return f"{mean:.2f} &plusmn; {std:.2f} {unit}" if unit else f"{mean:.2f} &plusmn; {std:.2f}"
+    elif n == 1:
+        return f"{mean:.2f} {unit}" if unit else f"{mean:.2f}"
+    else:
+        return f"0.00 {unit}" if unit else "0.00"
+
+def generate_profile_plot(measurements_list, output_path, title, y_label, prefix="cross_width_"):
+    plt.figure(figsize=(10, 5))
+    plt.style.use('dark_background')
+    ax = plt.gca()
+    ax.set_facecolor('#1e293b')
+    plt.gcf().patch.set_facecolor('#0f172a')
+    
+    percentages = list(range(0, 101, 5))
+    has_data = False
+    
+    for i, meas in enumerate(measurements_list):
+        vals = []
+        valid_pcts = []
+        for p in percentages:
+            key = f"{prefix}{p}pct_mm"
+            val_str = meas.get(key, 0.0)
+            if val_str == "":
+                val_str = 0.0
+            val = float(val_str)
+            if val > 0:
+                vals.append(val)
+                valid_pcts.append(p)
+        if vals:
+            has_data = True
+            label = meas.get("sample_id", f"Peça {i+1}")
+            plt.plot(valid_pcts, vals, marker='o', linestyle='-', linewidth=2, markersize=4, label=label)
+            
+    if not has_data:
+        plt.close()
+        return None
+        
+    plt.title(title, color='#f8fafc', pad=15)
+    plt.xlabel('Posição ao longo da peça (%)', color='#94a3b8')
+    plt.ylabel(y_label, color='#94a3b8')
+    plt.grid(color='#334155', linestyle='--', linewidth=0.5, alpha=0.7)
+    plt.legend(facecolor='#1e293b', edgecolor='#475569', labelcolor='#f8fafc')
+    plt.tick_params(colors='#94a3b8')
+    
+    # Hide top and right spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#475569')
+    ax.spines['bottom'].set_color('#475569')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', transparent=True)
+    plt.close()
+    return output_path
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="pt-BR">
@@ -339,22 +413,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="card">
                     <div class="card-title">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-                        Dimensões da Peça
+                        Dimensões da Peça (C × L × E)
                     </div>
-                    <div class="card-value">{dim_top_len:.2f} × {dim_top_width:.2f} mm</div>
-                    <div class="card-sub">Espessura (Vista Lateral): {thickness:.2f} mm</div>
-                </div>
-
-                <div class="card">
-                    <div class="card-title">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                        Média de Escala
-                    </div>
-                    <div class="card-value">{scale_h:.2f} px/mm</div>
-                    <div class="card-sub">Anisotropia: {anisotropy:.1%} ({scale_v:.2f} px/mm vertical)</div>
+                    <div class="card-value" style="font-size: 1.5rem;">{dim_top_len} × {dim_top_width} × {thickness}</div>
                 </div>
 
                 {cad_card_html}
+            </div>
+            <div style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.85rem; text-align: right;">
+                Escala: {scale_h:.2f} px/mm (Anisotropia: {anisotropy:.1%})
             </div>
         </section>
 
@@ -375,13 +442,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <img src="{annotated_top}" alt="Vista Superior Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
                         </div>
                     </div>
-                    <div class="img-card">
-                        <h3>Mapa de Calor de Desvios (Vs Modelo CAD)</h3>
-                        <div class="img-container">
-                            <img src="{deviation_top}" alt="Mapa de Desvio Top" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Mapa+CAD+N%C3%A3o+Encontrada'">
-                        </div>
-                    </div>
+                    {deviation_top_cards_html}
                 </div>
+                {profile_top_html}
             </div>
 
             <!-- Tab Vista Lateral -->
@@ -393,13 +456,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <img src="{annotated_side}" alt="Vista Lateral Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
                         </div>
                     </div>
-                    <div class="img-card">
-                        <h3>Mapa de Calor de Desvios (Vista Frontal CAD)</h3>
-                        <div class="img-container">
-                            <img src="{deviation_side}" alt="Mapa de Desvio Side" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Mapa+CAD+N%C3%A3o+Encontrada'">
-                        </div>
-                    </div>
+                    {deviation_side_cards_html}
                 </div>
+                {profile_side_html}
             </div>
         </section>
 
@@ -427,19 +486,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Comprimento da Peça (Maior)</td>
-                            <td>{dim_top_len:.2f} mm</td>
+                            <td>{dim_top_len}</td>
                             {cad_len_td_html}
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Largura da Peça (Menor)</td>
-                            <td>{dim_top_width:.2f} mm</td>
+                            <td>{dim_top_width}</td>
                             {cad_width_td_html}
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>Área Projetada</td>
-                            <td>{area_top:.2f} mm²</td>
+                            <td>{area_top}</td>
                             {cad_area_td_html}
                         </tr>
                         {side_rows_html}
@@ -505,44 +564,51 @@ def generate_report(session_id: str, open_browser: bool = False):
     # Determinar qual estado mostrar (preferir 'dry' se houver, senão 'wet')
     available_states = set(m.get("state") for m in measurements)
     state_to_use = "dry" if "dry" in available_states else ("wet" if "wet" in available_states else "dry")
-    state_name = "Seco" if state_to_use == "dry" else "Úmido"
+    state_name = f"Seco (n={len([m for m in measurements if m.get('view_mode')=='top' and m.get('state')==state_to_use])})" if state_to_use == "dry" else f"Úmido (n={len([m for m in measurements if m.get('view_mode')=='top' and m.get('state')==state_to_use])})"
 
     # Buscar dados do CSV
-    top_meas = next((m for m in measurements if m.get("view_mode") == "top" and m.get("state") == state_to_use), {})
-    if not top_meas:
-        top_meas = next((m for m in measurements if m.get("view_mode") == "top"), {})
+    top_meas_list = [m for m in measurements if m.get("view_mode") == "top" and m.get("state") == state_to_use]
+    if not top_meas_list:
+        top_meas_list = [m for m in measurements if m.get("view_mode") == "top"]
         
-    side_meas = next((m for m in measurements if m.get("view_mode") == "side" and m.get("state") == state_to_use), {})
-    if not side_meas:
-        side_meas = next((m for m in measurements if m.get("view_mode") == "side"), {})
+    side_meas_list = [m for m in measurements if m.get("view_mode") == "side" and m.get("state") == state_to_use]
+    if not side_meas_list:
+        side_meas_list = [m for m in measurements if m.get("view_mode") == "side"]
+
+    top_meas = top_meas_list[0] if top_meas_list else {}
+    side_meas = side_meas_list[0] if side_meas_list else {}
 
     # Determinar estados efetivos encontrados
     state_top = top_meas.get("state", state_to_use) if top_meas else state_to_use
     state_side = side_meas.get("state", state_to_use) if side_meas else state_to_use
 
-    top_cad = next((c for c in cad_comparisons if c.get("cad_view") == "top" and c.get("state") == state_top), {})
-    if not top_cad:
-        top_cad = next((c for c in cad_comparisons if c.get("cad_view") == "top"), {})
+    top_cad_list = [c for c in cad_comparisons if c.get("cad_view") == "top" and c.get("state") == state_top]
+    if not top_cad_list:
+        top_cad_list = [c for c in cad_comparisons if c.get("cad_view") == "top"]
         
-    front_cad = next((c for c in cad_comparisons if c.get("cad_view") == "front" and c.get("state") == state_side), {})
-    if not front_cad:
-        front_cad = next((c for c in cad_comparisons if c.get("cad_view") == "front"), {})
+    front_cad_list = [c for c in cad_comparisons if c.get("cad_view") == "front" and c.get("state") == state_side]
+    if not front_cad_list:
+        front_cad_list = [c for c in cad_comparisons if c.get("cad_view") == "front"]
 
-    # Valores padrão se não encontrados
-    dim_top_w = float(top_meas.get("min_rect_w_mm", 0.0)) if top_meas else 0.0
-    dim_top_h = float(top_meas.get("min_rect_h_mm", 0.0)) if top_meas else 0.0
+    top_cad = top_cad_list[0] if top_cad_list else {}
+    front_cad = front_cad_list[0] if front_cad_list else {}
 
-    area_top = float(top_meas.get("area_mm2", 0.0)) if top_meas else 0.0
+    # Agregação
+    mean_dim_top_w, std_dim_top_w, n_top = _aggregate(top_meas_list, "min_rect_w_mm")
+    mean_dim_top_h, std_dim_top_h, _ = _aggregate(top_meas_list, "min_rect_h_mm")
+    mean_area_top, std_area_top, _ = _aggregate(top_meas_list, "area_mm2")
     
-    thickness = float(side_meas.get("bbox_h_mm", 0.0)) if side_meas else 0.0
-    dim_side_w = float(side_meas.get("min_rect_w_mm", 0.0)) if side_meas else 0.0
+    mean_thick, std_thick, n_side = _aggregate(side_meas_list, "bbox_h_mm")
+    mean_dim_side_w, std_dim_side_w, _ = _aggregate(side_meas_list, "min_rect_w_mm")
 
     scale_h = float(top_meas.get("px_per_mm_h", 1.0)) if top_meas else 1.0
     scale_v = float(top_meas.get("px_per_mm_v", 1.0)) if top_meas else 1.0
     anisotropy = float(top_meas.get("anisotropy", 0.0)) if top_meas else 0.0
 
-    iou = float(top_cad.get("iou", 0.0)) if top_cad else 0.0
-    mean_dev = float(top_cad.get("mean_deviation_mm", 0.0)) if top_cad else 0.0
+    mean_iou, _, _ = _aggregate(top_cad_list, "iou")
+    iou = mean_iou
+    mean_dev_cad, _, _ = _aggregate(top_cad_list, "mean_deviation_mm")
+    mean_dev = mean_dev_cad
 
     # Valores padrão para nominal (se não houver comparação CAD)
     nominal_len = 56.10
@@ -560,7 +626,6 @@ def generate_report(session_id: str, open_browser: bool = False):
             nominal_area = float(top_cad.get("cad_area_mm2", nominal_area))
             nominal_side_w = nominal_width
         
-        # Tentar extrair espessura nominal do cad_extents_mm (formato WxHxD)
         extents_str = top_cad.get("cad_extents_mm")
         if extents_str:
             try:
@@ -575,36 +640,48 @@ def generate_report(session_id: str, open_browser: bool = False):
         if cad_thick > 0:
             nominal_thick = cad_thick
 
-    # Ordenar dimensões para que o maior valor medido seja comparado ao comprimento nominal
-    # e o menor valor medido seja comparado à largura nominal.
-    if dim_top_w > 0 or dim_top_h > 0:
-        measured_dims = sorted([dim_top_w, dim_top_h], reverse=True)
-        dim_top_len = measured_dims[0]
-        dim_top_width = measured_dims[1]
+    # Ordenar dimensões
+    if mean_dim_top_w > 0 or mean_dim_top_h > 0:
+        if mean_dim_top_w >= mean_dim_top_h:
+            mean_dim_top_len, std_dim_top_len = mean_dim_top_w, std_dim_top_w
+            mean_dim_top_width, std_dim_top_width = mean_dim_top_h, std_dim_top_h
+        else:
+            mean_dim_top_len, std_dim_top_len = mean_dim_top_h, std_dim_top_h
+            mean_dim_top_width, std_dim_top_width = mean_dim_top_w, std_dim_top_w
     else:
-        dim_top_len = 0.0
-        dim_top_width = 0.0
+        mean_dim_top_len = std_dim_top_len = 0.0
+        mean_dim_top_width = std_dim_top_width = 0.0
+
+    dim_top_len_str = _format_stat(mean_dim_top_len, std_dim_top_len, n_top, "mm")
+    dim_top_width_str = _format_stat(mean_dim_top_width, std_dim_top_width, n_top, "mm")
+    area_top_str = _format_stat(mean_area_top, std_area_top, n_top, "mm²")
+    thickness_str = _format_stat(mean_thick, std_thick, n_side, "mm")
+    dim_side_w_str = _format_stat(mean_dim_side_w, std_dim_side_w, n_side, "mm")
 
     # Devs
-    dev_len = dim_top_len - nominal_len if dim_top_len > 0 else 0.0
-    dev_len_pct = (dev_len / nominal_len) * 100 if dim_top_len > 0 and nominal_len > 0 else 0.0
-    dev_width = dim_top_width - nominal_width if dim_top_width > 0 else 0.0
-    dev_width_pct = (dev_width / nominal_width) * 100 if dim_top_width > 0 and nominal_width > 0 else 0.0
+    dev_len = mean_dim_top_len - nominal_len if mean_dim_top_len > 0 else 0.0
+    dev_len_pct = (dev_len / nominal_len) * 100 if mean_dim_top_len > 0 and nominal_len > 0 else 0.0
+    dev_width = mean_dim_top_width - nominal_width if mean_dim_top_width > 0 else 0.0
+    dev_width_pct = (dev_width / nominal_width) * 100 if mean_dim_top_width > 0 and nominal_width > 0 else 0.0
     
-    dev_thick = thickness - nominal_thick if thickness > 0 else 0.0
-    dev_thick_pct = (dev_thick / nominal_thick) * 100 if thickness > 0 and nominal_thick > 0 else 0.0
-    dev_area_pct = ((area_top - nominal_area) / nominal_area) * 100 if area_top > 0 and nominal_area > 0 else 0.0
+    dev_thick = mean_thick - nominal_thick if mean_thick > 0 else 0.0
+    dev_thick_pct = (dev_thick / nominal_thick) * 100 if mean_thick > 0 and nominal_thick > 0 else 0.0
+    dev_area_pct = ((mean_area_top - nominal_area) / nominal_area) * 100 if mean_area_top > 0 and nominal_area > 0 else 0.0
     
-    dev_side_w = dim_side_w - nominal_side_w if dim_side_w > 0 else 0.0
+    dev_side_w = mean_dim_side_w - nominal_side_w if mean_dim_side_w > 0 else 0.0
 
     # Determinar se existe comparação CAD
     has_cad = bool(top_cad) or bool(front_cad)
 
-    # Ângulos internos dos vértices (se disponíveis)
-    angle_0 = float(top_meas.get("corner_angle_0", 0.0)) if top_meas else 0.0
-    angle_1 = float(top_meas.get("corner_angle_1", 0.0)) if top_meas else 0.0
-    angle_2 = float(top_meas.get("corner_angle_2", 0.0)) if top_meas else 0.0
-    angle_3 = float(top_meas.get("corner_angle_3", 0.0)) if top_meas else 0.0
+    # Ângulos internos dos vértices (médias)
+    mean_angle_0, _, _ = _aggregate(top_meas_list, "corner_angle_0")
+    mean_angle_1, _, _ = _aggregate(top_meas_list, "corner_angle_1")
+    mean_angle_2, _, _ = _aggregate(top_meas_list, "corner_angle_2")
+    mean_angle_3, _, _ = _aggregate(top_meas_list, "corner_angle_3")
+    angle_0 = mean_angle_0
+    angle_1 = mean_angle_1
+    angle_2 = mean_angle_2
+    angle_3 = mean_angle_3
 
     # --- Construir HTML condicional: CAD card ---
     if has_cad:
@@ -633,20 +710,20 @@ def generate_report(session_id: str, open_browser: bool = False):
 
     # --- Construir HTML condicional: linhas da vista lateral ---
     side_rows_html = ""
-    if thickness > 0.0 or dim_side_w > 0.0:
+    if mean_thick > 0.0 or mean_dim_side_w > 0.0:
         if has_cad:
             side_rows_html = f"""
                         <tr>
                             <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
                             <td>Espessura (Altura)</td>
-                            <td>{thickness:.2f} mm</td>
+                            <td>{thickness_str}</td>
                             <td>{nominal_thick:.2f} mm</td>
                             <td><strong style="color: {dev_thick_color};">{dev_thick:+.2f} mm</strong> ({dev_thick_pct:+.1f}%)</td>
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
-                            <td>Largura (Perfil)</td>
-                            <td>{dim_side_w:.2f} mm</td>
+                            <td>Comprimento (Perfil)</td>
+                            <td>{dim_side_w_str}</td>
                             <td>{nominal_side_w:.2f} mm</td>
                             <td>{dev_side_w:+.2f} mm</td>
                         </tr>"""
@@ -655,12 +732,12 @@ def generate_report(session_id: str, open_browser: bool = False):
                         <tr>
                             <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
                             <td>Espessura (Altura)</td>
-                            <td>{thickness:.2f} mm</td>
+                            <td>{thickness_str}</td>
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
-                            <td>Largura (Perfil)</td>
-                            <td>{dim_side_w:.2f} mm</td>
+                            <td>Comprimento (Perfil)</td>
+                            <td>{dim_side_w_str}</td>
                         </tr>"""
 
     # --- Construir HTML: ângulos ---
@@ -693,25 +770,39 @@ def generate_report(session_id: str, open_browser: bool = False):
 
     # --- Construir HTML: seções transversais ---
     cross_section_rows_html = ""
-    cross_keys = [
-        ("Largura a 20%", "cross_width_20pct_mm"),
-        ("Largura a 50%", "cross_width_50pct_mm"),
-        ("Largura a 80%", "cross_width_80pct_mm"),
-        ("Comprimento a 20%", "cross_length_20pct_mm"),
-        ("Comprimento a 50%", "cross_length_50pct_mm"),
-        ("Comprimento a 80%", "cross_length_80pct_mm"),
-    ]
+    cross_keys = []
+    
+    # Adicionar raio de quina
+    mean_corner, std_corner, n_corner = _aggregate(top_meas_list, "corner_radius_mm")
+    if mean_corner > 0:
+        val_str = _format_stat(mean_corner, std_corner, n_corner, "mm")
+        dev_str = f"{mean_corner - 1.50:+.2f} mm"
+        cross_section_rows_html += f"""
+            <tr>
+                <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
+                <td>Raio de Quina Médio</td>
+                <td>{val_str}</td>
+                <td>1.50 mm</td>
+                <td>{dev_str}</td>
+            </tr>"""
+
+    for pct in [10, 50, 90]:
+        cross_keys.append((f"Largura a {pct}%", f"cross_width_{pct}pct_mm"))
+    for pct in [10, 50, 90]:
+        cross_keys.append((f"Comprimento a {pct}%", f"cross_length_{pct}pct_mm"))
+
     has_cross = any(top_meas.get(k, 0) for _, k in cross_keys) if top_meas else False
     if has_cross:
         for label, key in cross_keys:
-            val = float(top_meas.get(key, 0.0))
-            if val > 0:
+            mean_val, std_val, n_cross = _aggregate(top_meas_list, key)
+            if mean_val > 0:
+                val_str = _format_stat(mean_val, std_val, n_cross, "mm")
                 if has_cad:
                     cross_section_rows_html += f"""
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>{label}</td>
-                            <td>{val:.2f} mm</td>
+                            <td>{val_str}</td>
                             <td>—</td>
                             <td>—</td>
                         </tr>"""
@@ -720,7 +811,7 @@ def generate_report(session_id: str, open_browser: bool = False):
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>{label}</td>
-                            <td>{val:.2f} mm</td>
+                            <td>{val_str}</td>
                         </tr>"""
 
     def get_color(val):
@@ -740,24 +831,92 @@ def generate_report(session_id: str, open_browser: bool = False):
     annotated_top = f"annotated/top/{state_top}/{stem_top}_annotated.png" if stem_top else ""
     annotated_side = f"annotated/side/{state_side}/{stem_side}_annotated.png" if stem_side else ""
     
-    deviation_top = f"cad_comparison/{top_meas.get('sample_id', '')}_{state_top}_top_deviation.png" if (top_meas and top_cad) else ""
-    deviation_side = f"cad_comparison/{side_meas.get('sample_id', '')}_{state_side}_front_deviation.png" if (side_meas and front_cad) else ""
+    deviation_top_cards_html = ""
+    for cad_c in top_cad_list:
+        sid = cad_c.get("sample_id", "")
+        dev_map = f"cad_comparison/{sid}_{state_top}_top_deviation.png"
+        deviation_top_cards_html += f"""
+                    <div class="img-card">
+                        <h3>Mapa de Calor de Desvios ({sid})</h3>
+                        <div class="img-container">
+                            <img src="{dev_map}" alt="Mapa CAD" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Mapa+CAD+N%C3%A3o+Encontrado'">
+                        </div>
+                    </div>"""
+
+    deviation_side_cards_html = ""
+    for cad_c in front_cad_list:
+        sid = cad_c.get("sample_id", "")
+        dev_map = f"cad_comparison/{sid}_{state_side}_side_deviation.png"
+        deviation_side_cards_html += f"""
+                    <div class="img-card">
+                        <h3>Mapa de Calor de Desvios Frontal ({sid})</h3>
+                        <div class="img-container">
+                            <img src="{dev_map}" alt="Mapa CAD" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Mapa+CAD+N%C3%A3o+Encontrado'">
+                        </div>
+                    </div>"""
+                    
+    # --- Gerar Gráficos de Perfil ---
+    output_session_dir = Path(config.OUTPUT_DIR) / session_id
+    output_session_dir.mkdir(parents=True, exist_ok=True)
+    
+    profile_top_html = ""
+    if top_meas_list:
+        plot_top_path = output_session_dir / f"profile_top_{session_id}.png"
+        res_top = generate_profile_plot(top_meas_list, str(plot_top_path), "Perfil de Variação de Largura (Vista Superior)", "Largura (mm)", prefix="cross_width_")
+        
+        plot_top_len_path = output_session_dir / f"profile_top_len_{session_id}.png"
+        res_top_len = generate_profile_plot(top_meas_list, str(plot_top_len_path), "Perfil de Variação de Comprimento (Vista Superior)", "Comprimento (mm)", prefix="cross_length_")
+        
+        if res_top:
+            profile_top_html += f"""
+                <div class="img-card" style="margin-top: 2rem;">
+                    <h3>Perfil Dimensional (Largura vs Comprimento)</h3>
+                    <div class="img-container">
+                        <img src="{plot_top_path.name}" alt="Gráfico de Perfil Superior">
+                    </div>
+                </div>
+            """
+        if res_top_len:
+            profile_top_html += f"""
+                <div class="img-card" style="margin-top: 2rem;">
+                    <h3>Perfil Dimensional (Comprimento vs Largura)</h3>
+                    <div class="img-container">
+                        <img src="{plot_top_len_path.name}" alt="Gráfico de Perfil Superior (Comprimento)">
+                    </div>
+                </div>
+            """
+            
+    profile_side_html = ""
+    if side_meas_list:
+        plot_side_path = output_session_dir / f"profile_side_{session_id}.png"
+        res_side = generate_profile_plot(side_meas_list, str(plot_side_path), "Perfil de Variação de Espessura (Vista Lateral)", "Espessura (mm)", prefix="cross_width_")
+        if res_side:
+            profile_side_html = f"""
+                <div class="img-card" style="margin-top: 2rem;">
+                    <h3>Perfil Dimensional (Espessura vs Comprimento)</h3>
+                    <div class="img-container">
+                        <img src="{plot_side_path.name}" alt="Gráfico de Perfil Lateral">
+                    </div>
+                </div>
+            """
 
     html_content = HTML_TEMPLATE.format(
         session=session_id,
         state_name=state_name,
-        dim_top_len=dim_top_len,
-        dim_top_width=dim_top_width,
-        area_top=area_top,
-        thickness=thickness,
-        dim_side_w=dim_side_w,
+        dim_top_len=dim_top_len_str,
+        dim_top_width=dim_top_width_str,
+        area_top=area_top_str,
+        thickness=thickness_str,
+        dim_side_w=dim_side_w_str,
         scale_h=scale_h,
         scale_v=scale_v,
         anisotropy=anisotropy,
         annotated_top=annotated_top,
         annotated_side=annotated_side,
-        deviation_top=deviation_top,
-        deviation_side=deviation_side,
+        profile_top_html=profile_top_html,
+        profile_side_html=profile_side_html,
+        deviation_top_cards_html=deviation_top_cards_html,
+        deviation_side_cards_html=deviation_side_cards_html,
         cad_card_html=cad_card_html,
         cad_th_html=cad_th_html,
         cad_len_td_html=cad_len_td_html,

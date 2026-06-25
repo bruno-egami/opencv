@@ -370,7 +370,16 @@ class CeramicAnalysisGUI(ctk.CTk):
             return
             
         material = self.combo_material.get()
-        cmd_args = ["full", "--session", session, "--material", material]
+        view = self.combo_view.get()
+        state = self.combo_state.get()
+        
+        cmd_args = [
+            "full", 
+            "--session", session, 
+            "--material", material,
+            "--view", view,
+            "--state", state
+        ]
         
         cad_path = self.get_cad_path()
         if cad_path:
