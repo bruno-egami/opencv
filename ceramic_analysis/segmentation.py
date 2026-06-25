@@ -1432,27 +1432,9 @@ def segment(
         mask = check_and_correct_inversion(mask)
         mask = postprocess_mask(mask)
 
-    # Separação forçada para múltiplas peças.
-    if seed_points is not None and len(seed_points) > 1:
-        # 1. Corte vertical (peças separadas horizontalmente, ex: vista frontal/lateral)
-        sp_sorted_x = sorted(seed_points, key=lambda p: p[0])
-        for i in range(len(sp_sorted_x) - 1):
-            x1, y1 = sp_sorted_x[i]
-            x2, y2 = sp_sorted_x[i+1]
-            if (x2 - x1) > min(mask.shape[1] * 0.05, 30):
-                mid_x = int((x1 + x2) / 2)
-                cv2.line(mask, (mid_x, 0), (mid_x, mask.shape[0]), 0, thickness=10)
-                logger.debug(f"  [Separação] Corte vertical aplicado no X={mid_x} para isolar sementes.")
-
-        # 2. Corte horizontal (peças separadas verticalmente, ex: vista superior)
-        sp_sorted_y = sorted(seed_points, key=lambda p: p[1])
-        for i in range(len(sp_sorted_y) - 1):
-            x1, y1 = sp_sorted_y[i]
-            x2, y2 = sp_sorted_y[i+1]
-            if (y2 - y1) > min(mask.shape[0] * 0.05, 30):
-                mid_y = int((y1 + y2) / 2)
-                cv2.line(mask, (0, mid_y), (mask.shape[1], mid_y), 0, thickness=10)
-                logger.debug(f"  [Separação] Corte horizontal aplicado no Y={mid_y} para isolar sementes.")
+    # A separação forçada foi removida pois o algoritmo Watershed já separa 
+    # naturalmente as peças (colocando bordas de -1 entre bacias distintas). 
+    # Os cortes com cv2.line estavam fatiando as peças incorretamente.
 
     # Detectar contornos
     contours, _ = cv2.findContours(
@@ -1791,11 +1773,9 @@ def segment_watershed_seeded(
         
     h_small, w_small = img_small.shape[:2]
     
-    # Bilateral Filter: preserva as bordas externas enquanto suaviza levemente o MDF
+    # Bilateral Filter: suaviza a granulação do MDF sem destruir (borrar) as bordas físicas!
+    # Isso impede que o gradiente da peça se expanda para a sombra.
     img_small = cv2.bilateralFilter(img_small, 9, 75, 75)
-    
-    # Suavização moderada para ajudar a mesclar as trilhas internas, mas sem vazar a borda.
-    img_small = cv2.GaussianBlur(img_small, (9, 9), 0)
     
     mp = (int(mdf_point[0] * scale), int(mdf_point[1] * scale))
     # Sementes redimensionadas
@@ -1816,11 +1796,13 @@ def segment_watershed_seeded(
     # Marcar background no ponto do MDF
     cv2.circle(markers, mp, seed_radius * 2, bg_marker, -1)
     
-    # ATENÇÃO: NÃO marcar as bordas da imagem como background! 
-    # Como as peças podem estar próximas à borda superior ou inferior,
-    # se a borda for marcada como background garantido, o Watershed fará o background "invadir" a peça
-    # pelas ranhuras internas antes da semente da peça conseguir se expandir até a ponta!
-    # Apenas a semente do MDF já é suficiente para inundar todo o background.
+    # Marcar bordas da imagem como background garantido
+    border_w = max(5, int(w_small * 0.02))
+    border_h = max(5, int(h_small * 0.02))
+    markers[:border_h, :] = bg_marker
+    markers[-border_h:, :] = bg_marker
+    markers[:, :border_w] = bg_marker
+    markers[:, -border_w:] = bg_marker
     
     # Marcar bloco de calibração como background garantido (2)
     if calibration_corners is not None:

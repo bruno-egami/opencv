@@ -410,18 +410,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <section>
             <h2 class="section-title">Resumo Metrológico</h2>
             <div class="metrics-grid">
-                <div class="card">
+                <div class="card" style="grid-column: span 2;">
                     <div class="card-title">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
                         Dimensões da Peça (C × L × E)
                     </div>
-                    <div class="card-value" style="font-size: 1.5rem;">{dim_top_len} × {dim_top_width} × {thickness}</div>
+                    <div class="card-value" style="font-size: 1.25rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        <span>{dim_top_len}</span>
+                        <span style="color: var(--text-secondary);">×</span>
+                        <span>{dim_top_width}</span>
+                        <span style="color: var(--text-secondary);">×</span>
+                        <span>{thickness}</span>
+                    </div>
                 </div>
 
                 {cad_card_html}
             </div>
-            <div style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.85rem; text-align: right;">
-                Escala: {scale_h:.2f} px/mm (Anisotropia: {anisotropy:.1%})
+            <div style="margin-top: 3rem; color: var(--text-secondary); font-size: 0.85rem; text-align: center; border-top: 1px solid var(--glass-border); padding-top: 1rem;">
+                Média de Escala: {scale_h:.2f} px/mm (Anisotropia: {anisotropy:.1%})
             </div>
         </section>
 
@@ -890,12 +896,25 @@ def generate_report(session_id: str, open_browser: bool = False):
     if side_meas_list:
         plot_side_path = output_session_dir / f"profile_side_{session_id}.png"
         res_side = generate_profile_plot(side_meas_list, str(plot_side_path), "Perfil de Variação de Espessura (Vista Lateral)", "Espessura (mm)", prefix="cross_width_")
+        
+        plot_side_len_path = output_session_dir / f"profile_side_len_{session_id}.png"
+        res_side_len = generate_profile_plot(side_meas_list, str(plot_side_len_path), "Perfil de Variação de Comprimento/Largura (Vista Lateral)", "Dimensão (mm)", prefix="cross_length_")
+        
         if res_side:
-            profile_side_html = f"""
+            profile_side_html += f"""
                 <div class="img-card" style="margin-top: 2rem;">
-                    <h3>Perfil Dimensional (Espessura vs Comprimento)</h3>
+                    <h3>Perfil Dimensional (Espessura)</h3>
                     <div class="img-container">
-                        <img src="{plot_side_path.name}" alt="Gráfico de Perfil Lateral">
+                        <img src="{plot_side_path.name}" alt="Gráfico de Perfil Lateral (Espessura)">
+                    </div>
+                </div>
+            """
+        if res_side_len:
+            profile_side_html += f"""
+                <div class="img-card" style="margin-top: 2rem;">
+                    <h3>Perfil Dimensional (Comprimento/Largura)</h3>
+                    <div class="img-container">
+                        <img src="{plot_side_len_path.name}" alt="Gráfico de Perfil Lateral (Outra Dimensão)">
                     </div>
                 </div>
             """
