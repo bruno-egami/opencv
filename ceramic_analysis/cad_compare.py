@@ -794,7 +794,8 @@ def generate_deviation_map(
     px_per_mm_v: float,
     tolerance_mm: float = 1.0,
     cad_holes_px: list = None,
-    metrics: dict = None
+    metrics: dict = None,
+    view: str = "top"
 ) -> np.ndarray:
     """
     Gera uma imagem de mapa de desvios visualmente premium.
@@ -812,6 +813,7 @@ def generate_deviation_map(
         tolerance_mm: Limiar de tolerância geométrico (mm)
         cad_holes_px: Lista de contornos de furos do CAD em pixels
         metrics: Dicionário com as métricas agregadas para plotagem da legenda
+        view: String com a vista ("top", "front", etc.)
         
     Returns:
         Imagem anotada (np.ndarray)
@@ -830,7 +832,7 @@ def generate_deviation_map(
     font_scale = max(0.5, min(w_img, h_img) / 1800.0)
     thickness = max(1, int(font_scale * 2))
     
-    text_w = int(620 * font_scale)
+    text_w = int(850 * font_scale)
     text_h = int((380 if metrics else 160) * font_scale)
     
     x_start = int(25 * font_scale)
@@ -849,7 +851,7 @@ def generate_deviation_map(
         cv2.putText(annotated, text, (x_start + int(15 * font_scale), y_offset), font, font_scale, color, thickness, cv2.LINE_AA)
         y_offset += int(28 * font_scale)
         
-    put_text("COMPARAÇÃO COM MODELO CAD", (0, 255, 255))
+    put_text("COMPARACAO COM MODELO CAD", (0, 255, 255))
     put_text(f"Tolerancia Limite: {tolerance_mm:.2f} mm")
     
     if metrics:
@@ -860,12 +862,20 @@ def generate_deviation_map(
         
         if "diameter_photo_mm" in metrics:
             put_text(f"Dia. Medido/CAD: {metrics['diameter_photo_mm']:.2f}/{metrics['diameter_cad_mm']:.2f} mm")
-            put_text(f"Desvio Dia.: {metrics['diameter_deviation_mm']:.3f} mm ({metrics['diameter_deviation_pct']:.2f}%)")
+            put_text(f"Desvio Dia.: {metrics['diameter_deviation_mm']:+.3f} mm ({metrics['diameter_deviation_pct']:+.2f}%)")
             put_text(f"Concentricidade: {metrics['concentricity_mm']:.3f} mm")
         else:
-            put_text(f"Desvio Largura (W): {metrics['bbox_w_deviation_mm']:.3f} mm ({metrics['bbox_w_deviation_pct']:.2f}%)")
-            put_text(f"Desvio Altura (H): {metrics['bbox_h_deviation_mm']:.3f} mm ({metrics['bbox_h_deviation_pct']:.2f}%)")
-            put_text(f"Desvio de Area: {metrics['area_deviation_pct']:.2f}%")
+            w_label = "Largura (X)"
+            h_label = "Profundidade (Y)" if view == "top" else "Altura (Z)"
+            
+            cad_w = metrics['cad_bbox_w_mm']
+            cad_h = metrics['cad_bbox_h_mm']
+            meas_w = metrics['measured_bbox_w_mm']
+            meas_h = metrics['measured_bbox_h_mm']
+            
+            put_text(f"{w_label}: CAD {cad_w:.1f} | Real {meas_w:.1f} | Desvio {metrics['bbox_w_deviation_mm']:+.2f} mm ({metrics['bbox_w_deviation_pct']:+.1f}%)")
+            put_text(f"{h_label}: CAD {cad_h:.1f} | Real {meas_h:.1f} | Desvio {metrics['bbox_h_deviation_mm']:+.2f} mm ({metrics['bbox_h_deviation_pct']:+.1f}%)")
+            put_text(f"Area: CAD {metrics['cad_area_mm2']:.0f} | Real {metrics['measured_area_mm2']:.0f} | Desvio {metrics['area_deviation_pct']:+.1f}%")
             
         if "n_holes_photo" in metrics and metrics["n_holes_cad"] > 0:
             put_text(f"Furos (Foto/CAD): {metrics['n_holes_photo']}/{metrics['n_holes_cad']} (IoU: {metrics.get('holes_iou', 0.0):.3f})")

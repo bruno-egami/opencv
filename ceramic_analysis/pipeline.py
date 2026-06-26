@@ -592,7 +592,22 @@ def cmd_cad_compare(args):
     logger.info(f"  Simetria detectada: {orientation['is_symmetric']} (eixo: {orientation['symmetry_axis']})")
 
     # 3. Expandir vistas a processar
-    views = ["top", "front", "back", "left", "right"] if "all" in args.view else args.view
+    views_arg = args.view_cad if hasattr(args, "view_cad") else args.view
+    if isinstance(views_arg, str):
+        views_arg = [views_arg]
+        
+    views = []
+    for v in views_arg:
+        if v == "all":
+            views.extend(["top", "front", "back", "left", "right"])
+        elif v == "both":
+            views.extend(["top", "front"])
+        elif v == "side":
+            views.extend(["front"])
+        else:
+            views.append(v)
+    
+    views = list(dict.fromkeys(views))
 
     # 4. Extrai medições executando o processamento
     logger.info("Processando imagens da sessão para extrair contornos das fotos...")
@@ -729,7 +744,8 @@ def cmd_cad_compare(args):
                 px_per_mm_v=px_v,
                 tolerance_mm=tolerance_mm,
                 cad_holes_px=cad_holes_px,
-                metrics=metrics
+                metrics=metrics,
+                view=view
             )
 
             # Adicionar aos resultados globais
@@ -971,7 +987,7 @@ Exemplos:
     p_full.add_argument("--cad", default=None, help="Caminho para o modelo CAD (.stl/.step/.stp) para comparacao")
     p_full.add_argument(
         "--view-cad", nargs="+", dest="view_cad",
-        choices=["top", "front", "back", "left", "right", "all"],
+        choices=["top", "front", "back", "left", "right", "all", "both", "side"],
         default=["top", "front"],
         help="Vista(s) do CAD a comparar (default: top front)"
     )
@@ -984,7 +1000,7 @@ Exemplos:
     p_cad.add_argument("--cad", required=True, help="Caminho para o modelo CAD (.stl/.step/.stp)")
     p_cad.add_argument(
         "--view", nargs="+",
-        choices=["top", "front", "back", "left", "right", "all"],
+        choices=["top", "front", "back", "left", "right", "all", "both", "side"],
         default=["top", "front"],
         help="Vista(s) a comparar (default: top front)"
     )
