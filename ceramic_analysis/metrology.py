@@ -112,60 +112,7 @@ def detect_calibration_block(
                 ret = True
                 break
 
-    # --- INÍCIO DO AJUSTE MANUAL INTERATIVO ---
-    import sys
-    is_testing = "pytest" in sys.modules
-    use_interactive = getattr(config, "INTERACTIVE_CALIBRATION", False) and not is_testing
 
-    if use_interactive:
-        import interactive
-        if len(image.shape) == 2:
-            img_color = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        else:
-            img_color = image.copy()
-
-        initial_points = None
-        if ret and corners is not None:
-            corners_reshaped = corners.reshape(-1, 2)
-            tuned_points, confirmed = interactive.fine_tune_checkerboard_grid(
-                img_color,
-                corners_reshaped,
-                pattern_size=pattern_size,
-                window_title="Validar Malha do Bloco Padrao"
-            )
-            if confirmed:
-                corners = tuned_points.reshape(-1, 1, 2)
-                ret = True
-        else:
-            selected = interactive.select_checkerboard_corners_manually(
-                img_color,
-                window_title="Falha Automatica: Selecionar 4 Cantos do Bloco Padrao"
-            )
-            if selected is not None:
-                src_pts = np.array([
-                    [0, 0],
-                    [cols - 1, 0],
-                    [cols - 1, rows - 1],
-                    [0, rows - 1]
-                ], dtype=np.float32)
-                H, _ = cv2.findHomography(src_pts, selected)
-                grid_x, grid_y = np.meshgrid(np.arange(cols), np.arange(rows))
-                ideal_grid = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1).astype(np.float32)
-                projected_grid = cv2.perspectiveTransform(ideal_grid.reshape(-1, 1, 2), H)
-                initial_points = projected_grid.reshape(-1, 2)
-                
-                tuned_points, confirmed = interactive.fine_tune_checkerboard_grid(
-                    img_color,
-                    initial_points,
-                    pattern_size=pattern_size,
-                    window_title="Ajuste Fino da Malha do Bloco Padrao"
-                )
-                if confirmed:
-                    corners = tuned_points.reshape(-1, 1, 2)
-                    ret = True
-                else:
-                    corners = None
-                    ret = False
 
     if not ret or corners is None:
         logger.warning("Bloco padrão de calibração não foi detectado automaticamente.")

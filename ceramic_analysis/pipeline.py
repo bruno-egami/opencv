@@ -571,7 +571,7 @@ def cmd_analyze(args):
             logger.warning(f"Não foi possível gerar o relatório HTML automaticamente: {report_err}")
 
 
-def cmd_cad_compare(args):
+def cmd_cad_compare(args, precomputed_measurements=None):
     """Compara as peças segmentadas da sessão com um modelo CAD de referência."""
     session_dir = get_session_dir(args.session)
 
@@ -610,16 +610,20 @@ def cmd_cad_compare(args):
     views = list(dict.fromkeys(views))
 
     # 4. Extrai medições executando o processamento
-    logger.info("Processando imagens da sessão para extrair contornos das fotos...")
-    proc_args = argparse.Namespace(
-        session=args.session,
-        view="both",  # Processa ambas as vistas (top e side)
-        state=args.state,
-        strategy=getattr(args, "strategy", "auto"),
-        perspective_correction=getattr(args, "perspective_correction", False),
-        no_annotate=getattr(args, "no_annotate", False)
-    )
-    measurements = cmd_process(proc_args)
+    if precomputed_measurements is not None:
+        logger.info("Utilizando contornos pré-processados da sessão atual...")
+        measurements = precomputed_measurements
+    else:
+        logger.info("Processando imagens da sessão para extrair contornos das fotos...")
+        proc_args = argparse.Namespace(
+            session=args.session,
+            view="both",  # Processa ambas as vistas (top e side)
+            state=args.state,
+            strategy=getattr(args, "strategy", "auto"),
+            perspective_correction=getattr(args, "perspective_correction", False),
+            no_annotate=getattr(args, "no_annotate", False)
+        )
+        measurements = cmd_process(proc_args)
 
     if not measurements:
         logger.error("Nenhuma medição física encontrada na sessão para comparação.")
@@ -839,7 +843,7 @@ def cmd_full(args):
     logger.info(f"\n{'═'*60}")
     logger.info("ETAPA 3/5: Processamento (pré-proc + segmentação + metrologia)")
     logger.info(f"{'═'*60}")
-    cmd_process(args)
+    session_measurements = cmd_process(args)
 
     # 4. Analisar
     logger.info(f"\n{'═'*60}")
@@ -852,7 +856,7 @@ def cmd_full(args):
         logger.info(f"\n{'═'*60}")
         logger.info("ETAPA 5/5: Comparação de Peças com Modelo CAD")
         logger.info(f"{'═'*60}")
-        cmd_cad_compare(args)
+        cmd_cad_compare(args, precomputed_measurements=session_measurements)
 
     logger.info(f"\n{'═'*60}")
     logger.info("PIPELINE CONCLUÍDO")
