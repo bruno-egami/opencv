@@ -276,8 +276,8 @@ class InteractiveContourEditor:
             status_contrast = "Ativo" if self.show_enhanced else "Inativo"
             instructions = [
                 "Arrastar Ponto: Click esquerdo + arrastar  |  Zoom: Scroll Mouse  |  Mover: Click direito + arrastar",
-                f"Adicionar Ponto: Duplo-click  |  Remover: Selecionar + [Delete]/[D]  |  Realce [C]: {status_contrast}",
-                "Confirmar: [Enter] / [Espaço]               |  Resetar: [R]  |  Cancelar (Auto): [Esc] / [Q]"
+                f"Adicionar Ponto: Duplo-click  |  Remover: [Delete]/[D]  |  Realce [C]: {status_contrast}",
+                "Confirmar: [Enter] / [Espaço]  |  Refinar Auto: [A]  |  Reset: [R]  |  Cancelar: [Esc]"
             ]
             for i, text in enumerate(instructions):
                 cv2.putText(view, text, (20, 30 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (240, 240, 240), 1, cv2.LINE_AA)
@@ -322,6 +322,55 @@ class InteractiveContourEditor:
                     self.vertices.pop(self.selected_idx)
                     self.selected_idx = None
                     self.was_adjusted = True
+                    
+            # 'a'/'A' para Auto-refinar contorno dentro do poligono atual
+            elif val in [ord('a'), ord('A')]:
+                logger.info("Executando auto-refinamento dentro do poligono atual...")
+                mask = np.zeros(self.img_original.shape[:2], dtype=np.uint8)
+                pts = np.array(self.vertices, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.fillPoly(mask, [pts], 255)
+                
+                # Cortar a imagem para o bounding box do poligono para otimizar
+                x, y, bw, bh = cv2.boundingRect(pts)
+                pad = 10
+                x1 = max(0, x - pad)
+                y1 = max(0, y - pad)
+                x2 = min(self.img_original.shape[1], x + bw + pad)
+                y2 = min(self.img_original.shape[0], y + bh + pad)
+                
+                roi_gray = cv2.cvtColor(self.img_original[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                roi_mask = mask[y1:y2, x1:x2]
+                
+                # Suavizacao pesada para remover a textura e ruido da argila (evita auto-intersecoes no contorno)
+                blur = cv2.GaussianBlur(roi_gray, (21, 21), 0)
+                pixels = blur[roi_mask > 0]
+                
+                if len(pixels) > 0:
+                    ret, _ = cv2.threshold(pixels, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    
+                    _, thresh = cv2.threshold(blur, ret, 255, cv2.THRESH_BINARY)
+                    thresh = cv2.bitwise_and(thresh, thresh, mask=roi_mask)
+                    
+                    # Fechamento e Abertura com kernel grande para suavizar bordas
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+                    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+                    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+                    
+                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        best_c = max(contours, key=cv2.contourArea)
+                        
+                        # Simplificacao do poligono - valor um pouco maior para menos vertices
+                        epsilon = 0.0035 * cv2.arcLength(best_c, True)
+                        approx = cv2.approxPolyDP(best_c, epsilon, True)
+                        
+                        approx[:, 0, 0] += x1
+                        approx[:, 0, 1] += y1
+                        
+                        self.vertices = [list(pt[0]) for pt in approx]
+                        self.selected_idx = None
+                        self.was_adjusted = True
+                        logger.info(f"Auto-refinamento concluido. {len(self.vertices)} pontos encontrados.")
                     
         cv2.destroyWindow(self.window_title)
         
