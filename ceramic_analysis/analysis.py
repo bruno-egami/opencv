@@ -1,3 +1,6 @@
+import cv2
+import numpy as np
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """
 Módulo de análise comparativa e exportação de dados.
@@ -372,235 +375,73 @@ def export_csv(data: list, output_path: str = None, columns: list = None):
 def annotate_image(
     image: np.ndarray,
     metrics: dict,
-    output_path: str,
+    output_path: str = None,
     scale: dict = None,
     draw_contour: bool = True,
-    draw_bbox: bool = True,
+    draw_bbox: bool = False,
     draw_ellipse: bool = False,
-    draw_dimensions: bool = True,
+    draw_dimensions: bool = False,
     dim_background: bool = True,
+    img_copy: bool = True
 ) -> np.ndarray:
-    """
-    Desenha contornos, dimensões e metadados sobre a imagem.
-
-    Args:
-        image: Imagem BGR para anotar (será copiada).
-        metrics: Dict com métricas (px e mm) do contorno.
-        output_path: Caminho para salvar a imagem anotada.
-        scale: Dict com informações de escala (para metadados no canto).
-        draw_contour: Desenhar o contorno detectado.
-        draw_bbox: Desenhar o bounding box.
-        draw_ellipse: Desenhar a elipse ajustada.
-        draw_dimensions: Sobrepor dimensões em mm.
-        dim_background: Escurecer o fundo (fora do contorno) para destacar a peça.
-
-    Returns:
-        Imagem anotada.
-    """
-    annotated = image.copy()
+    import cv2
+    import numpy as np
+    from pathlib import Path
+    
+    annotated = image.copy() if img_copy else image
     h, w = annotated.shape[:2]
 
-    # Escurecer o background (fora do contorno da peça) em 50% para destacá-la
     if dim_background and "contour" in metrics:
         contour = metrics["contour"]
         mask_inside = np.zeros((h, w), dtype=np.uint8)
         cv2.drawContours(mask_inside, [contour], -1, 255, -1)
         mask_outside = cv2.bitwise_not(mask_inside)
         
-        # Gerar background escurecido
         darkened_bg = cv2.addWeighted(annotated, 0.5, np.zeros_like(annotated), 0.5, 0)
         
-        # Combinar: área interna mantém original, área externa fica escurecida
         img_inside = cv2.bitwise_and(annotated, annotated, mask=mask_inside)
         img_outside = cv2.bitwise_and(darkened_bg, darkened_bg, mask=mask_outside)
         annotated = cv2.add(img_inside, img_outside)
 
-    # Cores
-    COLOR_CONTOUR = (0, 255, 0)      # Verde
-    COLOR_BBOX = (255, 200, 0)       # Ciano
-    COLOR_ELLIPSE = (0, 165, 255)    # Laranja
-    COLOR_TEXT = (255, 255, 255)      # Branco
-    COLOR_TEXT_BG = (0, 0, 0)        # Preto (fundo do texto)
+    COLOR_CONTOUR = (0, 255, 0)
+    COLOR_TEXT = (255, 255, 255)
+    COLOR_TEXT_BG = (0, 0, 0)
 
-    # Escala da fonte relativa ao tamanho da imagem
     font_scale = max(0.5, min(w, h) / 1500.0)
     thickness = max(1, int(font_scale * 2))
 
-    # Contorno
     if draw_contour and "contour" in metrics:
         cv2.drawContours(annotated, [metrics["contour"]], -1, COLOR_CONTOUR, 2)
+        
+    # Identificacao da peca
+    if "sample_id" in metrics:
+        text_id = str(metrics["sample_id"]).split("_")[-1] # Apenas "P1", "P2", etc
+        
+        # Obter bounding box upright para saber onde colocar o texto
+        if "bbox_x" in metrics and "bbox_y" in metrics:
+            x = metrics["bbox_x"]
+            y = metrics["bbox_y"]
+            bw = metrics["bbox_w"]
             
-        if "corners_px" in metrics and metrics["corners_px"]:
-            corners = np.array(metrics["corners_px"], dtype=np.int32)
-            for pt in corners:
-                cv2.circle(annotated, tuple(pt), 4, COLOR_BBOX, -1)
-
-    # Bounding box Rotacionado (Substitui o BBox upright)
-    if draw_bbox and "min_rect_w" in metrics:
-        cx = metrics.get("robust_center_x", metrics["min_rect_center_x"])
-        cy = metrics.get("robust_center_y", metrics["min_rect_center_y"])
-        center = (cx, cy)
-        w = metrics.get("robust_w", metrics["min_rect_w"])
-        h = metrics.get("robust_h", metrics["min_rect_h"])
-        size = (w, h)
-        angle = metrics["min_rect_angle"]
-        box = cv2.boxPoints((center, size, angle))
-        box = np.int32(box)
-        cv2.drawContours(annotated, [box], 0, COLOR_BBOX, 2)
-
-    # Elipse
-    if draw_ellipse and metrics.get("ellipse_major_px", 0) > 0:
-        try:
-            center = (
-                int(metrics.get("min_rect_center_x", w // 2)),
-                int(metrics.get("min_rect_center_y", h // 2))
-            )
-            axes = (
-                int(metrics["ellipse_major_px"] / 2),
-                int(metrics["ellipse_minor_px"] / 2)
-            )
-            angle = metrics.get("ellipse_angle", 0)
-            cv2.ellipse(annotated, center, axes, angle, 0, 360, COLOR_ELLIPSE, 2)
-        except (ValueError, cv2.error):
-            pass
-
-    # Dimensões em mm
-    if draw_dimensions:
-        texts = []
-
-        if "area_mm2" in metrics:
-            texts.append(f"Area: {metrics['area_mm2']:.2f} mm²")
-        if "perimeter_mm" in metrics:
-            texts.append(f"Perim: {metrics['perimeter_mm']:.2f} mm")
-        if "circularity" in metrics:
-            texts.append(f"Circ: {metrics['circularity']:.3f}")
-
-        # Posicionar texto no canto superior esquerdo (calculado dinamicamente para não cortar)
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        (tw_temp, th_temp), baseline_temp = cv2.getTextSize("Ag", font, font_scale, thickness)
-        
-        # Margens horizontais e verticais escalonadas com base na fonte para evitar cortes nas bordas
-        x_start = int(25 * font_scale)
-        y_offset = int(th_temp + 25 * font_scale)
-        
-        for text in texts:
+            # Tentar colocar acima da peca (y - offset)
+            # Se sair da tela, colocar no centro
+            y_pos = int(y - 60 * font_scale)
+            if y_pos < 10:
+                y_pos = int(y + metrics.get("bbox_h", 0) + 25 * font_scale)
+                
+            x_pos = int(x + bw / 2)
+            
             _draw_text_with_bg(
-                annotated, text, (x_start, y_offset),
-                font_scale, COLOR_TEXT, COLOR_TEXT_BG, thickness
+                annotated, text_id, (x_pos, y_pos),
+                font_scale * 1.5, COLOR_TEXT, COLOR_TEXT_BG, thickness, center=True
             )
-            y_offset += int(35 * font_scale) + int(10 * font_scale)
 
-        # Desenhar cotas/linhas de dimensão diretamente sobre a peça no perímetro
-        circularity = metrics.get('circularity', 0.0)
-        
-        if circularity <= 0.80 and 'min_rect_center_x' in metrics and 'min_rect_w' in metrics and 'min_rect_h' in metrics:
-            center_pt = (metrics['min_rect_center_x'], metrics['min_rect_center_y'])
-            w_px = metrics['min_rect_w']
-            h_px = metrics['min_rect_h']
-            angle = metrics['min_rect_angle']
-            
-            box = cv2.boxPoints((center_pt, (w_px, h_px), angle))
-            
-            px_h = scale.get('px_per_mm_h', 1.0) if scale else 1.0
-            px_v = scale.get('px_per_mm_v', 1.0) if scale else 1.0
-            
-            rect_w_mm = metrics.get('min_rect_w_mm', 0)
-            rect_h_mm = metrics.get('min_rect_h_mm', 0)
-            major_mm = max(rect_w_mm, rect_h_mm)
-            minor_mm = min(rect_w_mm, rect_h_mm)
-
-            drawn_length = False
-            drawn_width = False
-
-            for i in range(4):
-                p1 = box[i]
-                p2 = box[(i + 1) % 4]
-                
-                dx_mm = (p2[0] - p1[0]) / px_h
-                dy_mm = (p2[1] - p1[1]) / px_v
-                len_mm = (dx_mm**2 + dy_mm**2)**0.5
-                
-                if len_mm < 1.0:
-                    continue
-                    
-                if abs(len_mm - major_mm) <= abs(len_mm - minor_mm):
-                    if not drawn_length:
-                        _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
-                        drawn_length = True
-                else:
-                    if not drawn_width:
-                        _draw_segment_cota(annotated, p1, p2, center_pt, len_mm, font_scale, COLOR_BBOX, COLOR_TEXT, COLOR_TEXT_BG, thickness, offset_multiplier=2.0)
-                        drawn_width = True
-        elif 'bbox_x' in metrics and 'bbox_y' in metrics and 'bbox_w' in metrics and 'bbox_h' in metrics:
-            x, y = metrics['bbox_x'], metrics['bbox_y']
-            bw, bh = metrics['bbox_w'], metrics['bbox_h']
-            
-            offset = int(40 * font_scale)
-            tick_size = int(6 * font_scale)
-            
-            if 'bbox_w_mm' in metrics:
-                if y - offset - 10 < 0:
-                    dy = bh + offset
-                else:
-                    dy = -offset
-                
-                cota_y = y + dy
-                cv2.line(annotated, (x, y), (x, cota_y + (5 if dy < 0 else -5)), COLOR_BBOX, 1, cv2.LINE_AA)
-                cv2.line(annotated, (x + bw, y), (x + bw, cota_y + (5 if dy < 0 else -5)), COLOR_BBOX, 1, cv2.LINE_AA)
-                cv2.line(annotated, (x, cota_y), (x + bw, cota_y), COLOR_BBOX, 1, cv2.LINE_AA)
-                cv2.line(annotated, (x - tick_size, cota_y + tick_size), (x + tick_size, cota_y - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
-                cv2.line(annotated, (x + bw - tick_size, cota_y + tick_size), (x + bw + tick_size, cota_y - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
-                text_w = f"{metrics['bbox_w_mm']:.2f} mm"
-                _draw_text_with_bg(
-                    annotated, text_w, (x + bw // 2, cota_y),
-                    font_scale * 0.7, COLOR_TEXT, COLOR_TEXT_BG, max(1, thickness - 1),
-                    center=True
-                )
-                
-            if 'bbox_h_mm' in metrics:
-                if x - offset - 10 < 0:
-                    dx = bw + offset
-                else:
-                    dx = -offset
-                    
-                cota_x = x + dx
-                cv2.line(annotated, (x, y), (cota_x + (5 if dx < 0 else -5), y), COLOR_BBOX, 1, cv2.LINE_AA)
-                cv2.line(annotated, (x, y + bh), (cota_x + (5 if dx < 0 else -5), y + bh), COLOR_BBOX, 1, cv2.LINE_AA)
-                cv2.line(annotated, (cota_x, y), (cota_x, y + bh), COLOR_BBOX, 1, cv2.LINE_AA)
-                cv2.line(annotated, (cota_x - tick_size, y + tick_size), (cota_x + tick_size, y - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
-                cv2.line(annotated, (cota_x - tick_size, y + bh + tick_size), (cota_x + tick_size, y + bh - tick_size), COLOR_BBOX, 2, cv2.LINE_AA)
-                text_h = f"{metrics['bbox_h_mm']:.2f} mm"
-                _draw_text_with_bg(
-                    annotated, text_h, (cota_x, y + bh // 2),
-                    font_scale * 0.7, COLOR_TEXT, COLOR_TEXT_BG, max(1, thickness - 1),
-                    center=True
-                )
-
-    # Metadados de escala no canto inferior esquerdo
-    if scale:
-        meta_texts = [
-            f"Vista: {scale.get('view_mode', 'N/A')}",
-            f"px/mm H: {scale.get('px_per_mm_h', 0):.2f}",
-            f"px/mm V: {scale.get('px_per_mm_v', 0):.2f}",
-        ]
-        x_start = int(25 * font_scale)
-        y_offset_meta = h - int(25 * font_scale)
-        for text in reversed(meta_texts):
-            _draw_text_with_bg(
-                annotated, text, (x_start, y_offset_meta),
-                font_scale * 0.7, (200, 200, 200), COLOR_TEXT_BG, max(1, thickness - 1)
-            )
-            y_offset_meta -= int(25 * font_scale) + int(5 * font_scale)
-
-    # Salvar
     if output_path is not None:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_path), annotated)
-        logger.debug(f"  Imagem anotada salva: {output_path}")
 
     return annotated
-
 
 def _draw_text_with_bg(
     img, text, position, font_scale, color, bg_color, thickness, center=False, angle=0
@@ -856,7 +697,7 @@ def annotate_image_multiple(
         
     if output_path is not None:
         from pathlib import Path
-        import cv2
+        # import cv2
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_path), annotated)
