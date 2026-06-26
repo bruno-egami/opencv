@@ -112,8 +112,6 @@ def detect_calibration_block(
                 ret = True
                 break
 
-
-
     if not ret or corners is None:
         logger.warning("Bloco padrão de calibração não foi detectado automaticamente.")
         return None
