@@ -109,8 +109,36 @@ def detect_calibration_block(
                 corners_orig_sc = c_transposed.reshape(-1, 1, 2)
 
                 corners = corners_orig_sc / scale if scale != 1.0 else corners_orig_sc
+                break
+            
+        # 3. Tentar com binarização Otsu global se as tentativas com adaptive thresh interno falharem
+        # Isso resolve casos onde há bloom (superexposição) nas casas brancas que confundem o limiar adaptativo
+        if not ret:
+            _, thresh_otsu = cv2.threshold(gray_sc, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            ret_otsu, corners_sc = cv2.findChessboardCorners(thresh_otsu, pattern_size, flags=flags_fast)
+            if not ret_otsu:
+                ret_otsu, corners_sc = cv2.findChessboardCorners(thresh_otsu, pattern_size, flags=flags_no_fast)
+            
+            if ret_otsu:
+                logger.info(f"[OK] Bloco padrao detectado com escala {scale} (usando Otsu)")
+                corners = corners_sc / scale if scale != 1.0 else corners_sc
                 ret = True
                 break
+                
+            if transposed_size != pattern_size:
+                ret_otsu_t, corners_sc = cv2.findChessboardCorners(thresh_otsu, transposed_size, flags=flags_fast)
+                if not ret_otsu_t:
+                    ret_otsu_t, corners_sc = cv2.findChessboardCorners(thresh_otsu, transposed_size, flags=flags_no_fast)
+                
+                if ret_otsu_t:
+                    logger.info(f"[OK] Bloco padrao (rotacionado) detectado com escala {scale} (usando Otsu)")
+                    c_grid = corners_sc.reshape(cols, rows, 2)
+                    c_transposed = c_grid.transpose(1, 0, 2)
+                    corners_orig_sc = c_transposed.reshape(-1, 1, 2)
+                    corners = corners_orig_sc / scale if scale != 1.0 else corners_orig_sc
+                    ret = True
+                    break
 
     if not ret or corners is None:
         logger.warning("Bloco padrão de calibração não foi detectado automaticamente.")

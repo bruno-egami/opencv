@@ -345,7 +345,7 @@ def cmd_process(args):
                             corners = interactive.validate_calibration_block_grid(
                                 color, auto_corners,
                                 pattern_size=config.CALIB_BLOCK_PATTERN_SIZE,
-                                cache_key=img_path.name
+                                cache_key=f"{view}_{img_path.name}"
                             )
                             if corners is None:
                                 raise metrology.MetrologyError("Calibração de bloco rejeitada/cancelada pelo usuário.")

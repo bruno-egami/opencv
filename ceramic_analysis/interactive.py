@@ -338,23 +338,51 @@ class InteractiveContourEditor:
                 x2 = min(self.img_original.shape[1], x + bw + pad)
                 y2 = min(self.img_original.shape[0], y + bh + pad)
                 
-                roi_gray = cv2.cvtColor(self.img_original[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                roi_color = self.img_original[y1:y2, x1:x2]
                 roi_mask = mask[y1:y2, x1:x2]
                 
-                # Suavizacao pesada para remover a textura e ruido da argila (evita auto-intersecoes no contorno)
-                blur = cv2.GaussianBlur(roi_gray, (21, 21), 0)
-                pixels = blur[roi_mask > 0]
+                # Redimensionar para otimizar GrabCut
+                h_orig, w_orig = roi_color.shape[:2]
+                scale = min(1000.0 / max(h_orig, w_orig), 1.0)
                 
-                if len(pixels) > 0:
-                    ret, _ = cv2.threshold(pixels, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                if scale < 1.0:
+                    roi_color_small = cv2.resize(roi_color, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                    roi_mask_small = cv2.resize(roi_mask, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+                else:
+                    roi_color_small = roi_color.copy()
+                    roi_mask_small = roi_mask.copy()
                     
-                    _, thresh = cv2.threshold(blur, ret, 255, cv2.THRESH_BINARY)
-                    thresh = cv2.bitwise_and(thresh, thresh, mask=roi_mask)
+                # Usar Watershed para um "snapping" baseado em gradiente (bordas) em vez de cor (GrabCut)
+                markers = np.zeros(roi_mask_small.shape, dtype=np.int32)
+                
+                # Fundo certo: fora do poligono (dilatado levemente para dar margem)
+                kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(3, int(15*scale)), max(3, int(15*scale))))
+                sure_bg = cv2.bitwise_not(cv2.dilate(roi_mask_small, kernel_dilate))
+                
+                # Frente certa: dentro do poligono (erodido levemente para dar margem)
+                kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(3, int(15*scale)), max(3, int(15*scale))))
+                sure_fg = cv2.erode(roi_mask_small, kernel_erode)
+                
+                markers[sure_bg > 127] = 1
+                markers[sure_fg > 127] = 2
+                
+                try:
+                    # Suavizar imagem levemente para o Watershed
+                    img_blur = cv2.GaussianBlur(roi_color_small, (5, 5), 0)
+                    cv2.watershed(img_blur, markers)
                     
-                    # Fechamento e Abertura com kernel grande para suavizar bordas
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+                    mask_ws_small = np.zeros(roi_mask_small.shape, dtype=np.uint8)
+                    mask_ws_small[markers == 2] = 255
+                    
+                    if scale < 1.0:
+                        mask_ws = cv2.resize(mask_ws_small, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+                        _, thresh = cv2.threshold(mask_ws, 127, 255, cv2.THRESH_BINARY)
+                    else:
+                        thresh = mask_ws_small
+                        
+                    # Fechamento e Abertura leves para suavizar bordas (menor que o GrabCut para não comer as quinas)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
                     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-                    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
                     
                     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     if contours:
@@ -371,6 +399,8 @@ class InteractiveContourEditor:
                         self.selected_idx = None
                         self.was_adjusted = True
                         logger.info(f"Auto-refinamento concluido. {len(self.vertices)} pontos encontrados.")
+                except Exception as e:
+                    logger.error(f"Falha no auto-refinamento via GrabCut: {e}")
                     
         cv2.destroyWindow(self.window_title)
         

@@ -689,6 +689,13 @@ def generate_report(session_id: str, open_browser: bool = False):
     angle_2 = mean_angle_2
     angle_3 = mean_angle_3
 
+    def get_color(val):
+        return "#10b981" if abs(val) < 1.5 else "#ef4444"
+
+    dev_len_color = get_color(dev_len)
+    dev_width_color = get_color(dev_width)
+    dev_thick_color = get_color(dev_thick)
+
     # --- Construir HTML condicional: CAD card ---
     if has_cad:
         cad_card_html = f"""<div class="card">
@@ -820,12 +827,7 @@ def generate_report(session_id: str, open_browser: bool = False):
                             <td>{val_str}</td>
                         </tr>"""
 
-    def get_color(val):
-        return "#10b981" if abs(val) < 1.5 else "#ef4444"
-
-    dev_len_color = get_color(dev_len)
-    dev_width_color = get_color(dev_width)
-    dev_thick_color = get_color(dev_thick)
+    # (Color definitions moved up)
 
     # Imagens (Caminhos relativos para o HTML carregar localmente)
     source_file_top = top_meas.get('source_file', '') if top_meas else ''
