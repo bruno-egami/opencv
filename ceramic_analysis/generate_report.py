@@ -442,12 +442,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <!-- Tab Vista Superior -->
             <div id="tab-top" class="tab-content active">
                 <div class="comparison-layout">
-                    <div class="img-card">
-                        <h3>Imagem Anotada (Contorno e Medição)</h3>
-                        <div class="img-container">
-                            <img src="{annotated_top}" alt="Vista Superior Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
-                        </div>
-                    </div>
+                    {annotated_top_cards_html}
                     {deviation_top_cards_html}
                 </div>
                 {profile_top_html}
@@ -456,12 +451,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <!-- Tab Vista Lateral -->
             <div id="tab-side" class="tab-content">
                 <div class="comparison-layout">
-                    <div class="img-card">
-                        <h3>Imagem Anotada (Espessura)</h3>
-                        <div class="img-container">
-                            <img src="{annotated_side}" alt="Vista Lateral Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
-                        </div>
-                    </div>
+                    {annotated_side_cards_html}
                     {deviation_side_cards_html}
                 </div>
                 {profile_side_html}
@@ -491,13 +481,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <tbody>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
-                            <td>Comprimento da Peça (Maior)</td>
+                            <td>Comprimento da Peça (Lado Maior)</td>
                             <td>{dim_top_len}</td>
                             {cad_len_td_html}
                         </tr>
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
-                            <td>Largura da Peça (Menor)</td>
+                            <td>Largura da Peça (Lado Menor)</td>
                             <td>{dim_top_width}</td>
                             {cad_width_td_html}
                         </tr>
@@ -605,7 +595,13 @@ def generate_report(session_id: str, open_browser: bool = False):
     mean_area_top, std_area_top, _ = _aggregate(top_meas_list, "area_mm2")
     
     mean_thick, std_thick, n_side = _aggregate(side_meas_list, "bbox_h_mm")
-    mean_dim_side_w, std_dim_side_w, _ = _aggregate(side_meas_list, "min_rect_w_mm")
+    
+    mean_rect_side_w, std_rect_side_w, _ = _aggregate(side_meas_list, "min_rect_w_mm")
+    mean_rect_side_h, std_rect_side_h, _ = _aggregate(side_meas_list, "min_rect_h_mm")
+    if mean_rect_side_w >= mean_rect_side_h:
+        mean_dim_side_w, std_dim_side_w = mean_rect_side_w, std_rect_side_w
+    else:
+        mean_dim_side_w, std_dim_side_w = mean_rect_side_h, std_rect_side_h
 
     scale_h = float(top_meas.get("px_per_mm_h", 1.0)) if top_meas else 1.0
     scale_v = float(top_meas.get("px_per_mm_v", 1.0)) if top_meas else 1.0
@@ -630,7 +626,7 @@ def generate_report(session_id: str, open_browser: bool = False):
             nominal_len = max(cad_w, cad_h)
             nominal_width = min(cad_w, cad_h)
             nominal_area = float(top_cad.get("cad_area_mm2", nominal_area))
-            nominal_side_w = nominal_width
+            nominal_side_w = nominal_len
         
         extents_str = top_cad.get("cad_extents_mm")
         if extents_str:
@@ -781,6 +777,38 @@ def generate_report(session_id: str, open_browser: bool = False):
                             <td>{angle_val:.2f}° ({dev_str} vs 90°)</td>
                         </tr>"""
 
+    mean_s_angle_0, _, _ = _aggregate(side_meas_list, "corner_angle_0")
+    mean_s_angle_1, _, _ = _aggregate(side_meas_list, "corner_angle_1")
+    mean_s_angle_2, _, _ = _aggregate(side_meas_list, "corner_angle_2")
+    mean_s_angle_3, _, _ = _aggregate(side_meas_list, "corner_angle_3")
+    s_angle_0 = mean_s_angle_0
+    
+    if s_angle_0 > 0:
+        angle_labels = [
+            ("Ângulo Vértice 1 (Sup-Esq)", mean_s_angle_0),
+            ("Ângulo Vértice 2 (Sup-Dir)", mean_s_angle_1),
+            ("Ângulo Vértice 3 (Inf-Dir)", mean_s_angle_2),
+            ("Ângulo Vértice 4 (Inf-Esq)", mean_s_angle_3),
+        ]
+        for label, angle_val in angle_labels:
+            dev_str = f"{angle_val - 90.00:+.2f}°"
+            if has_cad:
+                angle_rows_html += f"""
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>{label}</td>
+                            <td>{angle_val:.2f}°</td>
+                            <td>90.00°</td>
+                            <td>{dev_str}</td>
+                        </tr>"""
+            else:
+                angle_rows_html += f"""
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>{label}</td>
+                            <td>{angle_val:.2f}° ({dev_str} vs 90°)</td>
+                        </tr>"""
+
     # --- Construir HTML: seções transversais ---
     cross_section_rows_html = ""
     cross_keys = []
@@ -826,18 +854,59 @@ def generate_report(session_id: str, open_browser: bool = False):
                             <td>{label}</td>
                             <td>{val_str}</td>
                         </tr>"""
+                        
+    has_cross_side = any(side_meas.get(k, 0) for _, k in cross_keys) if side_meas else False
+    if has_cross_side:
+        for label, key in cross_keys:
+            side_label = label.replace("Largura", "Altura")
+            mean_val, std_val, n_cross = _aggregate(side_meas_list, key)
+            if mean_val > 0:
+                val_str = _format_stat(mean_val, std_val, n_cross, "mm")
+                if has_cad:
+                    cross_section_rows_html += f"""
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>{side_label}</td>
+                            <td>{val_str}</td>
+                            <td>—</td>
+                            <td>—</td>
+                        </tr>"""
+                else:
+                    cross_section_rows_html += f"""
+                        <tr>
+                            <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
+                            <td>{side_label}</td>
+                            <td>{val_str}</td>
+                        </tr>"""
 
     # (Color definitions moved up)
 
     # Imagens (Caminhos relativos para o HTML carregar localmente)
-    source_file_top = top_meas.get('source_file', '') if top_meas else ''
-    source_file_side = side_meas.get('source_file', '') if side_meas else ''
+    annotated_top_cards_html = ""
+    unique_top_sources = list(dict.fromkeys(m.get("source_file", "") for m in top_meas_list if m.get("source_file", "")))
+    for src in unique_top_sources:
+        stem = Path(src).stem
+        img_path = f"annotated/top/{state_top}/{stem}_annotated.png"
+        annotated_top_cards_html += f"""
+                    <div class="img-card">
+                        <h3>Imagem Anotada ({stem})</h3>
+                        <div class="img-container">
+                            <img src="{img_path}" alt="Vista Superior Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
+                        </div>
+                    </div>"""
     
-    stem_top = Path(source_file_top).stem if source_file_top else ''
-    stem_side = Path(source_file_side).stem if source_file_side else ''
-    
-    annotated_top = f"annotated/top/{state_top}/{stem_top}_annotated.png" if stem_top else ""
-    annotated_side = f"annotated/side/{state_side}/{stem_side}_annotated.png" if stem_side else ""
+    annotated_side_cards_html = ""
+    unique_side_sources = list(dict.fromkeys(m.get("source_file", "") for m in side_meas_list if m.get("source_file", "")))
+    for src in unique_side_sources:
+        stem = Path(src).stem
+        img_path = f"annotated/side/{state_side}/{stem}_annotated.png"
+        annotated_side_cards_html += f"""
+                    <div class="img-card">
+                        <h3>Imagem Anotada ({stem})</h3>
+                        <div class="img-container">
+                            <img src="{img_path}" alt="Vista Lateral Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
+                        </div>
+                    </div>"""
     
     deviation_top_cards_html = ""
     for cad_c in top_cad_list:
@@ -854,7 +923,7 @@ def generate_report(session_id: str, open_browser: bool = False):
     deviation_side_cards_html = ""
     for cad_c in front_cad_list:
         sid = cad_c.get("sample_id", "")
-        dev_map = f"cad_comparison/{sid}_{state_side}_side_deviation.png"
+        dev_map = f"cad_comparison/{sid}_{state_side}_front_deviation.png"
         deviation_side_cards_html += f"""
                     <div class="img-card">
                         <h3>Mapa de Calor de Desvios Frontal ({sid})</h3>
@@ -932,8 +1001,8 @@ def generate_report(session_id: str, open_browser: bool = False):
         scale_h=scale_h,
         scale_v=scale_v,
         anisotropy=anisotropy,
-        annotated_top=annotated_top,
-        annotated_side=annotated_side,
+        annotated_top_cards_html=annotated_top_cards_html,
+        annotated_side_cards_html=annotated_side_cards_html,
         profile_top_html=profile_top_html,
         profile_side_html=profile_side_html,
         deviation_top_cards_html=deviation_top_cards_html,
