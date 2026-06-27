@@ -58,7 +58,12 @@ def generate_profile_plot(measurements_list, output_path, title, y_label, prefix
             if val_str == "":
                 val_str = 0.0
             val = float(val_str)
-            if val > 0:
+            
+            # Forçar os extremos de 0% e 100% a serem plotados (mesmo se forem 0.0)
+            if p in [0, 100]:
+                vals.append(val)
+                valid_pcts.append(p)
+            elif val > 0:
                 vals.append(val)
                 valid_pcts.append(p)
         if vals:
@@ -462,9 +467,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <section>
             <h2 class="section-title">Dados Detalhados de Medição</h2>
             
-            <div style="background-color: rgba(59, 130, 246, 0.1); border-left: 4px solid #3b82f6; padding: 1rem; margin-bottom: 1.5rem; border-radius: 4px;">
-                <p style="margin: 0; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.5;">
-                    <strong>Nota sobre as métricas:</strong> Os valores principais de <em>Comprimento</em> e <em>Largura da Peça</em> representam as dimensões totais absolutas do contorno da peça (Retângulo de Área Mínima). Já as <em>Medições Transversais (10%, 50%, 90%)</em> representam as aferições pontuais nas fatias internas, permitindo identificar variações dimensionais ao longo da peça.
+            <div style="background-color: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.2); padding: 1.5rem; margin-bottom: 2rem; border-radius: 12px; backdrop-filter: blur(12px);">
+                <h3 style="font-size: 1.05rem; color: #60a5fa; margin-bottom: 0.75rem; font-family: 'Outfit', sans-serif; display: flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                    Metodologia de Medição e Perfis Dimensionais
+                </h3>
+                <p style="font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6; margin-bottom: 0.75rem;">
+                    <strong>Dimensões Globais:</strong> Os valores principais de <em>Comprimento</em> e <em>Largura da Peça</em> são obtidos pelo Retângulo de Área Mínima (<em>Minimum Area Bounding Box</em>) do contorno. Isso permite medir o tamanho total real independente de rotações da amostra na imagem.
+                </p>
+                <p style="font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6;">
+                    <strong>Geração dos Perfis (0% a 100%):</strong> O sistema traça uma linha média longitudinal ("espinha dorsal") ao longo do eixo principal da peça. Em intervalos regulares de 5%, o algoritmo projeta uma linha vetorial perpendicular a esse eixo. Os pontos onde essa linha intercepta o contorno externo são detectados, e a largura/comprimento local é calculado como a distância direta entre os dois pontos extremos de interseção. Nos limites de 0% e 100%, se a linha de varredura passar por fora da ponta arredondada da peça devido ao acabamento geométrico, o valor é plotado como 0.0 mm para uniformidade gráfica.
                 </p>
             </div>
 
