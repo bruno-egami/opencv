@@ -602,18 +602,51 @@ def generate_report(session_id: str, open_browser: bool = False):
     front_cad = front_cad_list[0] if front_cad_list else {}
 
     # Agregação
-    mean_dim_top_w, std_dim_top_w, n_top = _aggregate(top_meas_list, "min_rect_w_mm")
-    mean_dim_top_h, std_dim_top_h, _ = _aggregate(top_meas_list, "min_rect_h_mm")
+    # Para cada peça, o comprimento é o maior lado do retângulo e a largura é o menor lado
+    top_lengths = []
+    top_widths = []
+    for m in top_meas_list:
+        w_val = m.get("min_rect_w_mm", 0.0)
+        h_val = m.get("min_rect_h_mm", 0.0)
+        w = float(w_val) if w_val and w_val != "" else 0.0
+        h = float(h_val) if h_val and h_val != "" else 0.0
+        if w > 0 and h > 0:
+            top_lengths.append(max(w, h))
+            top_widths.append(min(w, h))
+            
+    if top_lengths:
+        mean_dim_top_len = np.mean(top_lengths)
+        std_dim_top_len = np.std(top_lengths)
+        n_top = len(top_lengths)
+    else:
+        mean_dim_top_len = std_dim_top_len = 0.0
+        n_top = 0
+        
+    if top_widths:
+        mean_dim_top_width = np.mean(top_widths)
+        std_dim_top_width = np.std(top_widths)
+    else:
+        mean_dim_top_width = std_dim_top_width = 0.0
+
     mean_area_top, std_area_top, _ = _aggregate(top_meas_list, "area_mm2")
     
     mean_thick, std_thick, n_side = _aggregate(side_meas_list, "bbox_h_mm")
     
-    mean_rect_side_w, std_rect_side_w, _ = _aggregate(side_meas_list, "min_rect_w_mm")
-    mean_rect_side_h, std_rect_side_h, _ = _aggregate(side_meas_list, "min_rect_h_mm")
-    if mean_rect_side_w >= mean_rect_side_h:
-        mean_dim_side_w, std_dim_side_w = mean_rect_side_w, std_rect_side_w
+    # Comprimento na vista lateral é o maior lado do min_rect
+    side_lengths = []
+    for m in side_meas_list:
+        w_val = m.get("min_rect_w_mm", 0.0)
+        h_val = m.get("min_rect_h_mm", 0.0)
+        w = float(w_val) if w_val and w_val != "" else 0.0
+        h = float(h_val) if h_val and h_val != "" else 0.0
+        if w > 0 and h > 0:
+            side_lengths.append(max(w, h))
+            
+    if side_lengths:
+        mean_dim_side_w = np.mean(side_lengths)
+        std_dim_side_w = np.std(side_lengths)
     else:
-        mean_dim_side_w, std_dim_side_w = mean_rect_side_h, std_rect_side_h
+        mean_dim_side_w = std_dim_side_w = 0.0
 
     scale_h = float(top_meas.get("px_per_mm_h", 1.0)) if top_meas else 1.0
     scale_v = float(top_meas.get("px_per_mm_v", 1.0)) if top_meas else 1.0
@@ -654,17 +687,8 @@ def generate_report(session_id: str, open_browser: bool = False):
         if cad_thick > 0:
             nominal_thick = cad_thick
 
-    # Ordenar dimensões
-    if mean_dim_top_w > 0 or mean_dim_top_h > 0:
-        if mean_dim_top_w >= mean_dim_top_h:
-            mean_dim_top_len, std_dim_top_len = mean_dim_top_w, std_dim_top_w
-            mean_dim_top_width, std_dim_top_width = mean_dim_top_h, std_dim_top_h
-        else:
-            mean_dim_top_len, std_dim_top_len = mean_dim_top_h, std_dim_top_h
-            mean_dim_top_width, std_dim_top_width = mean_dim_top_w, std_dim_top_w
-    else:
-        mean_dim_top_len = std_dim_top_len = 0.0
-        mean_dim_top_width = std_dim_top_width = 0.0
+    # As dimensões já foram ordenadas por peça individualmente acima
+    pass
 
     dim_top_len_str = _format_stat(mean_dim_top_len, std_dim_top_len, n_top, "mm")
     dim_top_width_str = _format_stat(mean_dim_top_width, std_dim_top_width, n_top, "mm")
