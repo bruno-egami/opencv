@@ -29,6 +29,7 @@ O subprojeto contido no diretório `ceramic_analysis/` foi desenvolvido para com
 - 🎯 **Segmentação multi-estratégia** — Subtração de fundo, LAB color space, Otsu e extração de bordas paramétricas (`segment_edges`) para isolar peças complexas que sujam a base (ex: pó de **Argila** e Caulim sobre o MDF).
 - 📏 **Metrologia Coplanar por Bloco Padrão** — Calibração por imagem utilizando um bloco físico padrão assimétrico de `9×8` quadrados (`6mm` de lado e `3mm` de borda branca, dimensões externas `60×54mm`) posicionado coplanar à face da peça cerâmica. Isso elimina erros de escala causados por profundidade e paralaxe.
 - 📐 **Interface Gráfica Interativa** — Ajuste manual fino das interseções do bloco de calibração e do contorno da peça segmentada:
+  - **Ajuste por Remendos Vetoriais**: Permite adicionar (tecla **`[A]`**) ou subtrair (tecla **`[S]`**) áreas do contorno automático de alta resolução desenhando polígonos simples de correção ("remendos"), preservando 100% da precisão da detecção automática no restante da peça.
   - **Seletor de Material**: Seleção entre "Argila" e "Termoplástico" para calibrar automaticamente a sensibilidade da segmentação contra manchas na base.
   - **Proporção Dinâmica (Aspect Ratio)**: Garante que maximizar ou redimensionar a janela OpenCV não cause distorções geométricas.
   - **Filtro de Contraste Integrado**: Tecla **`[C]`** ativa/desativa um realce de contraste (CLAHE no espaço LAB) para auxiliar na visualização.

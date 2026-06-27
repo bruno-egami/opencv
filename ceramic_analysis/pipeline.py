@@ -609,21 +609,81 @@ def cmd_cad_compare(args, precomputed_measurements=None):
     
     views = list(dict.fromkeys(views))
 
-    # 4. Extrai medições executando o processamento
+    # 4. Extrai medições executando o processamento ou carregando o existente
     if precomputed_measurements is not None:
         logger.info("Utilizando contornos pré-processados da sessão atual...")
         measurements = precomputed_measurements
     else:
-        logger.info("Processando imagens da sessão para extrair contornos das fotos...")
-        proc_args = argparse.Namespace(
-            session=args.session,
-            view="both",  # Processa ambas as vistas (top e side)
-            state=args.state,
-            strategy=getattr(args, "strategy", "auto"),
-            perspective_correction=getattr(args, "perspective_correction", False),
-            no_annotate=getattr(args, "no_annotate", False)
-        )
-        measurements = cmd_process(proc_args)
+        measurements_csv = Path(config.OUTPUT_DIR) / args.session / f"measurements_{args.session}.csv"
+        
+        # Se as medições já foram processadas anteriormente, carregar do CSV e restaurar os contornos das máscaras
+        if measurements_csv.exists():
+            logger.info("Carregando medições pré-processadas do CSV e restaurando contornos das máscaras...")
+            import csv
+            measurements = []
+            with open(measurements_csv, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Converter valores numéricos
+                    for key in row:
+                        try:
+                            row[key] = float(row[key])
+                        except (ValueError, TypeError):
+                            pass
+                    measurements.append(row)
+            
+            # Restaurar os contornos a partir das máscaras salvas
+            restored_count = 0
+            image_contour_counts = {}  # Mantém o controle do índice para cada imagem
+            for m in measurements:
+                state = m["state"]
+                view_mode = m["view_mode"]
+                source_file = m["source_file"]
+                image_name = Path(source_file).stem
+                
+                # Chave única por imagem no estado
+                img_key = f"{state}_{view_mode}_{image_name}"
+                idx = image_contour_counts.get(img_key, 0)
+                image_contour_counts[img_key] = idx + 1
+                
+                mask_path = Path(config.MASKS_DIR) / f"{image_name}_mask.png"
+                if mask_path.exists():
+                    mask_img = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    if mask_img is not None:
+                        contours, _ = cv2.findContours(mask_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if contours:
+                            # Ordenar contornos pelo X da bounding box (mesma ordenação do pipeline original)
+                            contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[0])
+                            if idx < len(contours):
+                                m["contour"] = contours[idx]
+                                restored_count += 1
+                            else:
+                                logger.warning(f"Índice de contorno {idx} fora de alcance para a máscara {mask_path.name}")
+                        else:
+                            logger.warning(f"Nenhum contorno encontrado na máscara {mask_path.name}")
+                    else:
+                        logger.warning(f"Falha ao ler máscara: {mask_path}")
+                else:
+                    logger.warning(f"Máscara não encontrada: {mask_path}")
+            
+            logger.info(f"✓ {restored_count} contorno(s) restaurado(s) com sucesso a partir das máscaras.")
+            
+            # Se por algum motivo não conseguimos restaurar nenhum contorno, forçamos o processamento
+            if restored_count == 0:
+                logger.warning("Não foi possível restaurar nenhum contorno das máscaras. Executando processamento...")
+                measurements = None
+                
+        if measurements is None or len(measurements) == 0:
+            logger.info("Processando imagens da sessão para extrair contornos das fotos...")
+            proc_args = argparse.Namespace(
+                session=args.session,
+                view="both",  # Processa ambas as vistas (top e side)
+                state=args.state,
+                strategy=getattr(args, "strategy", "auto"),
+                perspective_correction=getattr(args, "perspective_correction", False),
+                no_annotate=getattr(args, "no_annotate", False)
+            )
+            measurements = cmd_process(proc_args)
 
     if not measurements:
         logger.error("Nenhuma medição física encontrada na sessão para comparação.")

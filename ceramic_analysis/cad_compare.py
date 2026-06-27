@@ -868,14 +868,14 @@ def generate_deviation_map(
             w_label = "Largura (X)"
             h_label = "Profundidade (Y)" if view == "top" else "Altura (Z)"
             
-            cad_w = metrics['cad_bbox_w_mm']
-            cad_h = metrics['cad_bbox_h_mm']
-            meas_w = metrics['measured_bbox_w_mm']
-            meas_h = metrics['measured_bbox_h_mm']
+            cad_w = metrics.get('cad_bbox_w_mm', 0.0)
+            cad_h = metrics.get('cad_bbox_h_mm', 0.0)
+            meas_w = metrics.get('measured_bbox_w_mm', 0.0)
+            meas_h = metrics.get('measured_bbox_h_mm', 0.0)
             
-            put_text(f"{w_label}: CAD {cad_w:.1f} | Real {meas_w:.1f} | Desvio {metrics['bbox_w_deviation_mm']:+.2f} mm ({metrics['bbox_w_deviation_pct']:+.1f}%)")
-            put_text(f"{h_label}: CAD {cad_h:.1f} | Real {meas_h:.1f} | Desvio {metrics['bbox_h_deviation_mm']:+.2f} mm ({metrics['bbox_h_deviation_pct']:+.1f}%)")
-            put_text(f"Area: CAD {metrics['cad_area_mm2']:.0f} | Real {metrics['measured_area_mm2']:.0f} | Desvio {metrics['area_deviation_pct']:+.1f}%")
+            put_text(f"{w_label}: CAD {cad_w:.1f} | Real {meas_w:.1f} | Desvio {metrics.get('bbox_w_deviation_mm', 0.0):+.2f} mm ({metrics.get('bbox_w_deviation_pct', 0.0):+.1f}%)")
+            put_text(f"{h_label}: CAD {cad_h:.1f} | Real {meas_h:.1f} | Desvio {metrics.get('bbox_h_deviation_mm', 0.0):+.2f} mm ({metrics.get('bbox_h_deviation_pct', 0.0):+.1f}%)")
+            put_text(f"Area: CAD {metrics.get('cad_area_mm2', 0.0):.0f} | Real {metrics.get('measured_area_mm2', 0.0):.0f} | Desvio {metrics.get('area_deviation_pct', 0.0):+.1f}%")
             
         if "n_holes_photo" in metrics and metrics["n_holes_cad"] > 0:
             put_text(f"Furos (Foto/CAD): {metrics['n_holes_photo']}/{metrics['n_holes_cad']} (IoU: {metrics.get('holes_iou', 0.0):.3f})")

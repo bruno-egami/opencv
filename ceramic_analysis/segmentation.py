@@ -1324,7 +1324,7 @@ def _preprocess_mdf_background(
     
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return gray_blurred, image_color
+        return gray_blurred, image_color, blue_tape_found
         
     largest_contour = max(contours, key=cv2.contourArea)
     largest_area = cv2.contourArea(largest_contour)

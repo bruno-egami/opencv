@@ -35,19 +35,12 @@ class InteractiveContourEditor:
         self.img = self.img_original
         self.window_title = window_title
         
-        # Guardar contorno original para referência
+        # Guardar contorno original para referência e reset
         self.original_contour = auto_contour.copy()
+        self.current_contour = auto_contour.copy()
         
-        # Inicializar apenas com os 4 cantos do retângulo de área mínima
-        rect = cv2.minAreaRect(auto_contour)
-        box = cv2.boxPoints(rect)
-        
-        vertices = []
-        for i in range(4):
-            vertices.append(list(box[i]))
-                
-        self.vertices = vertices
-        self.initial_vertices = [list(pt) for pt in vertices]
+        # Lista de pontos [x, y] do polígono de correção (remendo) ativo
+        self.patch_points = []
         
         # Dimensões da janela ajustadas pela resolução e aspect ratio
         img_h, img_w = self.img.shape[:2]
@@ -70,7 +63,7 @@ class InteractiveContourEditor:
         self.default_tx = self.tx
         self.default_ty = self.ty
         
-        # Configurações visuais e snap
+        # Configurações visuais e snap para arrastar pontos do remendo
         self.vertex_radius = config.INTERACTIVE_VERTEX_RADIUS
         self.snap_distance = config.INTERACTIVE_SNAP_DISTANCE
         
@@ -106,10 +99,10 @@ class InteractiveContourEditor:
         # Obter coordenadas no espaço da imagem
         ix, iy = self.to_image((x, y))
         
-        # 1. Atualizar índice do vértice sob o mouse (hover)
+        # 1. Atualizar índice do vértice sob o mouse (hover) nos pontos do remendo
         self.hovered_idx = None
         min_dist = float('inf')
-        for i, pt in enumerate(self.vertices):
+        for i, pt in enumerate(self.patch_points):
             sx, sy = self.to_screen(pt)
             dist = np.hypot(x - sx, y - sy)
             if dist < self.snap_distance and dist < min_dist:
@@ -122,29 +115,32 @@ class InteractiveContourEditor:
             zoom_factor = 1.15 if signed_flags > 0 else (1.0 / 1.15)
             
             new_s = self.s * zoom_factor
-            # Limitar escala
             if 0.05 <= new_s <= 100.0:
                 self.s = new_s
                 self.tx = x - self.s * ix
                 self.ty = y - self.s * iy
                 
-        # 3. Clique do Botão Esquerdo (Selecionar/Iniciar arraste de vértice)
+        # 3. Clique do Botão Esquerdo
         elif event == cv2.EVENT_LBUTTONDOWN:
             if self.hovered_idx is not None:
+                # Iniciar arraste de ponto existente do remendo
                 self.selected_idx = self.hovered_idx
                 self.is_dragging = True
             else:
-                self.selected_idx = None
+                # Adicionar novo ponto ao remendo
+                img_h, img_w = self.img.shape[:2]
+                ix_clamped = max(0.0, min(float(img_w - 1), ix))
+                iy_clamped = max(0.0, min(float(img_h - 1), iy))
+                self.patch_points.append([ix_clamped, iy_clamped])
+                self.selected_idx = len(self.patch_points) - 1
                 
-        # 4. Movimento do Mouse (Arrastar vértice ou Pan)
+        # 4. Movimento do Mouse (Arrastar ponto do remendo ou Pan)
         elif event == cv2.EVENT_MOUSEMOVE:
             if self.is_dragging and self.selected_idx is not None:
                 img_h, img_w = self.img.shape[:2]
-                # Limitar vértice aos limites da imagem
                 ix_clamped = max(0.0, min(float(img_w - 1), ix))
                 iy_clamped = max(0.0, min(float(img_h - 1), iy))
-                self.vertices[self.selected_idx] = [ix_clamped, iy_clamped]
-                self.was_adjusted = True
+                self.patch_points[self.selected_idx] = [ix_clamped, iy_clamped]
             elif self.is_panning:
                 self.tx = self.pan_start_tx + (x - self.pan_start_x)
                 self.ty = self.pan_start_ty + (y - self.pan_start_y)
@@ -164,42 +160,42 @@ class InteractiveContourEditor:
         # 7. Soltar Botão Direito
         elif event == cv2.EVENT_RBUTTONUP:
             self.is_panning = False
+
+    def apply_patch(self, is_addition=True):
+        """Aplica o polígono de correção ativo ao contorno atual via máscara binária."""
+        if len(self.patch_points) < 3:
+            logger.warning("Polígono de correção precisa de pelo menos 3 pontos para ser aplicado.")
+            return
+
+        h, w = self.img.shape[:2]
+        
+        # 1. Criar máscara do contorno atual
+        mask_current = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(mask_current, [self.current_contour], -1, 255, -1)
+        
+        # 2. Criar máscara do polígono do usuário
+        mask_user = np.zeros((h, w), dtype=np.uint8)
+        pts_user = np.array(self.patch_points, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.fillPoly(mask_user, [pts_user], 255)
+        
+        # 3. Aplicar operação booleana
+        if is_addition:
+            mask_new = cv2.bitwise_or(mask_current, mask_user)
+        else:
+            mask_new = cv2.bitwise_and(mask_current, cv2.bitwise_not(mask_user))
             
-        # 8. Duplo-clique Esquerdo (Adicionar novo vértice na aresta mais próxima)
-        elif event == cv2.EVENT_LBUTTONDBLCLK:
-            num_v = len(self.vertices)
-            if num_v < 100:
-                best_idx = -1
-                best_dist = float('inf')
-                best_proj = None
-                
-                for i in range(num_v):
-                    p1 = np.array(self.vertices[i])
-                    p2 = np.array(self.vertices[(i + 1) % num_v])
-                    p = np.array([ix, iy])
-                    
-                    v = p2 - p1
-                    w = p - p1
-                    v_len_sq = np.dot(v, v)
-                    if v_len_sq == 0:
-                        t = 0.0
-                    else:
-                        t = np.dot(w, v) / v_len_sq
-                    t = max(0.0, min(1.0, t))
-                    projection = p1 + t * v
-                    dist = np.linalg.norm(p - projection)
-                    
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_idx = i
-                        best_proj = projection
-                
-                best_dist_screen = best_dist * self.s
-                # Somente adiciona se estiver a menos de 50px de distância da aresta na tela
-                if best_idx != -1 and best_dist_screen < 50.0:
-                    self.vertices.insert(best_idx + 1, list(best_proj))
-                    self.selected_idx = best_idx + 1
-                    self.was_adjusted = True
+        # 4. Extrair o novo contorno externo de alta resolução
+        contours, _ = cv2.findContours(mask_new, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Selecionar o maior contorno externo
+            self.current_contour = max(contours, key=cv2.contourArea)
+            self.was_adjusted = True
+            self.patch_points = [] # Limpar o polígono aplicado
+            self.selected_idx = None
+            logger.info(f"Remendo aplicado com sucesso ({'Adição' if is_addition else 'Subtração'}). Novo contorno extraído.")
+        else:
+            logger.warning("A operação resultou em um contorno vazio. Revertendo alteração.")
 
     def run(self):
         """Loop de exibição e captura de teclas."""
@@ -213,7 +209,6 @@ class InteractiveContourEditor:
         )
         
         while True:
-            # Obter dimensões dinâmicas da janela para evitar distorção no redimensionamento/maximização
             try:
                 rect = cv2.getWindowImageRect(self.window_title)
                 if rect is not None and len(rect) == 4 and rect[2] > 0 and rect[3] > 0:
@@ -230,7 +225,7 @@ class InteractiveContourEditor:
                 borderMode=cv2.BORDER_CONSTANT, borderValue=(30, 30, 30)
             )
             
-            # 2. Desenhar contorno automático original como referência sutil (vermelho)
+            # 2. Desenhar contorno automático original como referência sutil (azul/roxo)
             pts_original_screen = []
             for pt in self.original_contour:
                 x_i, y_i = pt[0]
@@ -239,45 +234,56 @@ class InteractiveContourEditor:
             if len(pts_original_screen) > 0:
                 pts_original_screen = np.array(pts_original_screen, dtype=np.int32).reshape((-1, 1, 2))
                 overlay = view.copy()
-                cv2.polylines(overlay, [pts_original_screen], isClosed=True, color=(100, 100, 240), thickness=2, lineType=cv2.LINE_AA)
-                cv2.addWeighted(overlay, 0.4, view, 0.6, 0, view)
+                cv2.polylines(overlay, [pts_original_screen], isClosed=True, color=(200, 100, 100), thickness=1, lineType=cv2.LINE_AA)
+                cv2.addWeighted(overlay, 0.3, view, 0.7, 0, view)
             
-            # 3. Desenhar arestas do contorno ajustável (verde)
-            num_v = len(self.vertices)
-            screen_pts = []
-            for pt in self.vertices:
-                screen_pts.append(self.to_screen(pt))
+            # 3. Desenhar contorno ativo de alta resolução (vermelho)
+            pts_current_screen = []
+            for pt in self.current_contour:
+                x_i, y_i = pt[0]
+                pts_current_screen.append(self.to_screen((x_i, y_i)))
                 
-            for i in range(num_v):
-                pt1 = screen_pts[i]
-                pt2 = screen_pts[(i + 1) % num_v]
-                cv2.line(view, pt1, pt2, (80, 220, 80), 2, cv2.LINE_AA)
+            if len(pts_current_screen) > 0:
+                pts_current_screen = np.array(pts_current_screen, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(view, [pts_current_screen], isClosed=True, color=(0, 0, 255), thickness=2, lineType=cv2.LINE_AA)
                 
-            # 4. Desenhar vértices arrastáveis
-            for i, pt in enumerate(screen_pts):
-                if i == self.selected_idx:
-                    color = (50, 100, 255)   # Laranja/Vermelho (Selecionado/Arrastando)
-                    radius = self.vertex_radius + 4
-                elif i == self.hovered_idx:
-                    color = (50, 255, 255)   # Amarelo/Verde (Hover)
-                    radius = self.vertex_radius + 2
-                else:
-                    color = (240, 150, 50)   # Azul Claro (Normal)
-                    radius = self.vertex_radius
+            # 4. Desenhar o polígono de correção ativo (verde)
+            num_patch = len(self.patch_points)
+            if num_patch > 0:
+                screen_patch = [self.to_screen(pt) for pt in self.patch_points]
+                
+                # Desenhar linhas
+                for i in range(num_patch - 1):
+                    cv2.line(view, screen_patch[i], screen_patch[i+1], (80, 220, 80), 2, cv2.LINE_AA)
+                if num_patch >= 3:
+                    # Fechar o polígono com linha mais fina para indicar que será fechado
+                    cv2.line(view, screen_patch[-1], screen_patch[0], (80, 220, 80), 1, cv2.LINE_AA)
                     
-                cv2.circle(view, pt, radius, color, -1, cv2.LINE_AA)
-                cv2.circle(view, pt, radius + 1, (255, 255, 255), 1, cv2.LINE_AA)
-                
+                # Desenhar vértices
+                for i, pt in enumerate(screen_patch):
+                    if i == self.selected_idx:
+                        color = (50, 100, 255) # Laranja (selecionado)
+                        radius = self.vertex_radius + 3
+                    elif i == self.hovered_idx:
+                        color = (50, 255, 255) # Amarelo (hover)
+                        radius = self.vertex_radius + 1
+                    else:
+                        color = (50, 200, 50) # Verde (normal)
+                        radius = self.vertex_radius
+                        
+                    cv2.circle(view, pt, radius, color, -1, cv2.LINE_AA)
+                    cv2.circle(view, pt, radius + 1, (255, 255, 255), 1, cv2.LINE_AA)
+                    
             # 5. Desenhar painel translúcido de instruções no topo
             overlay_help = view.copy()
-            cv2.rectangle(overlay_help, (10, 10), (w - 10, 80), (15, 15, 15), -1)
+            cv2.rectangle(overlay_help, (10, 10), (w - 10, 90), (15, 15, 15), -1)
             cv2.addWeighted(overlay_help, 0.75, view, 0.25, 0, view)
             
             status_contrast = "Ativo" if self.show_enhanced else "Inativo"
             instructions = [
-                "Arrastar Ponto: Click esquerdo + arrastar  |  Zoom: Scroll Mouse  |  Mover: Click direito + arrastar",
-                f"Adicionar Ponto: Duplo-click  |  Remover: [Delete]/[D]  |  Realce [C]: {status_contrast}",
-                "Confirmar: [Enter] / [Espaço]  |  Refinar Auto: [A]  |  Reset: [R]  |  Cancelar: [Esc]"
+                "Criar Remendo: Click esquerdo para adicionar pontos  |  Zoom: Scroll Mouse  |  Mover: Click direito + arrastar",
+                f"Aplicar Remendo: [A] para Fundir (Adicionar)  |  [S] para Cortar (Subtrair)  |  Realce [C]: {status_contrast}",
+                "Remover Ponto: [Backspace] / [Delete]  |  Resetar: [R]  |  Confirmar: [Enter]  |  Cancelar: [Esc]"
             ]
             for i, text in enumerate(instructions):
                 cv2.putText(view, text, (20, 30 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (240, 240, 240), 1, cv2.LINE_AA)
@@ -307,107 +313,38 @@ class InteractiveContourEditor:
                 self.show_enhanced = not self.show_enhanced
                 self.img = self.img_enhanced if self.show_enhanced else self.img_original
                 
-            # 'r'/'R' para Resetar
+            # 'r'/'R' para Resetar o contorno ativo para o original e limpar patch
             elif val in [ord('r'), ord('R')]:
-                self.vertices = [list(pt) for pt in self.initial_vertices]
+                self.current_contour = self.original_contour.copy()
+                self.patch_points = []
                 self.selected_idx = None
                 self.s = self.default_s
                 self.tx = self.default_tx
                 self.ty = self.default_ty
                 self.was_adjusted = False
+                logger.info("Contorno resetado para o estado original.")
                 
-            # Delete ou 'd'/'D' ou Backspace para deletar ponto selecionado
-            elif val in [ord('d'), ord('D')] or key in [3014656, 65535, 46, 2424832, 127]:
-                if len(self.vertices) > 3 and self.selected_idx is not None:
-                    self.vertices.pop(self.selected_idx)
-                    self.selected_idx = None
-                    self.was_adjusted = True
-                    
-            # 'a'/'A' para Auto-refinar contorno dentro do poligono atual
+            # 'a'/'A' para fundir (Adicionar)
             elif val in [ord('a'), ord('A')]:
-                logger.info("Executando auto-refinamento dentro do poligono atual...")
-                mask = np.zeros(self.img_original.shape[:2], dtype=np.uint8)
-                pts = np.array(self.vertices, dtype=np.int32).reshape((-1, 1, 2))
-                cv2.fillPoly(mask, [pts], 255)
+                self.apply_patch(is_addition=True)
                 
-                # Cortar a imagem para o bounding box do poligono para otimizar
-                x, y, bw, bh = cv2.boundingRect(pts)
-                pad = 10
-                x1 = max(0, x - pad)
-                y1 = max(0, y - pad)
-                x2 = min(self.img_original.shape[1], x + bw + pad)
-                y2 = min(self.img_original.shape[0], y + bh + pad)
+            # 's'/'S' para cortar (Subtrair)
+            elif val in [ord('s'), ord('S')]:
+                self.apply_patch(is_addition=False)
                 
-                roi_color = self.img_original[y1:y2, x1:x2]
-                roi_mask = mask[y1:y2, x1:x2]
-                
-                # Redimensionar para otimizar GrabCut
-                h_orig, w_orig = roi_color.shape[:2]
-                scale = min(1000.0 / max(h_orig, w_orig), 1.0)
-                
-                if scale < 1.0:
-                    roi_color_small = cv2.resize(roi_color, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-                    roi_mask_small = cv2.resize(roi_mask, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
-                else:
-                    roi_color_small = roi_color.copy()
-                    roi_mask_small = roi_mask.copy()
-                    
-                # Usar Watershed para um "snapping" baseado em gradiente (bordas) em vez de cor (GrabCut)
-                markers = np.zeros(roi_mask_small.shape, dtype=np.int32)
-                
-                # Fundo certo: fora do poligono (dilatado levemente para dar margem)
-                kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(3, int(15*scale)), max(3, int(15*scale))))
-                sure_bg = cv2.bitwise_not(cv2.dilate(roi_mask_small, kernel_dilate))
-                
-                # Frente certa: dentro do poligono (erodido levemente para dar margem)
-                kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(3, int(15*scale)), max(3, int(15*scale))))
-                sure_fg = cv2.erode(roi_mask_small, kernel_erode)
-                
-                markers[sure_bg > 127] = 1
-                markers[sure_fg > 127] = 2
-                
-                try:
-                    # Suavizar imagem levemente para o Watershed
-                    img_blur = cv2.GaussianBlur(roi_color_small, (5, 5), 0)
-                    cv2.watershed(img_blur, markers)
-                    
-                    mask_ws_small = np.zeros(roi_mask_small.shape, dtype=np.uint8)
-                    mask_ws_small[markers == 2] = 255
-                    
-                    if scale < 1.0:
-                        mask_ws = cv2.resize(mask_ws_small, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
-                        _, thresh = cv2.threshold(mask_ws, 127, 255, cv2.THRESH_BINARY)
+            # Backspace (8) ou Delete (46 no Windows/ASCII ou similar) para deletar último ponto do patch
+            elif val in [8, 127] or key in [3014656, 65535, 46, 2424832]:
+                if len(self.patch_points) > 0:
+                    if self.selected_idx is not None and self.selected_idx < len(self.patch_points):
+                        self.patch_points.pop(self.selected_idx)
                     else:
-                        thresh = mask_ws_small
-                        
-                    # Fechamento e Abertura leves para suavizar bordas (menor que o GrabCut para não comer as quinas)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-                    
-                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    if contours:
-                        best_c = max(contours, key=cv2.contourArea)
-                        
-                        # Simplificacao do poligono - valor um pouco maior para menos vertices
-                        epsilon = 0.0035 * cv2.arcLength(best_c, True)
-                        approx = cv2.approxPolyDP(best_c, epsilon, True)
-                        
-                        approx[:, 0, 0] += x1
-                        approx[:, 0, 1] += y1
-                        
-                        self.vertices = [list(pt[0]) for pt in approx]
-                        self.selected_idx = None
-                        self.was_adjusted = True
-                        logger.info(f"Auto-refinamento concluido. {len(self.vertices)} pontos encontrados.")
-                except Exception as e:
-                    logger.error(f"Falha no auto-refinamento via GrabCut: {e}")
+                        self.patch_points.pop()
+                    self.selected_idx = None
                     
         cv2.destroyWindow(self.window_title)
         
         if self.confirmed and self.was_adjusted:
-            # Converter de volta para formato de contorno OpenCV (Nx1x2, np.int32)
-            adjusted_contour = np.array(np.round(self.vertices), dtype=np.int32).reshape((-1, 1, 2))
-            return adjusted_contour, True
+            return self.current_contour, True
         else:
             return self.original_contour, False
 
