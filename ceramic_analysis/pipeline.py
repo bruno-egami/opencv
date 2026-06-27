@@ -379,11 +379,17 @@ def cmd_process(args):
                         else:
                             logger.warning("  [Seed] Seed points não fornecidos. Segmentação sem seeds.")
 
+                    # Definir pasta de máscaras específica para a sessão, estado e vista
+                    session_masks_dir = Path(config.OUTPUT_DIR) / args.session / "masks" / state / view
+                    session_masks_dir.mkdir(parents=True, exist_ok=True)
+
                     # 3. Segmentação
                     seg_results = segmentation.segment(
                         gray, color, img_path.stem,
                         background=background,
                         strategy=args.strategy,
+                        save_mask=True,
+                        masks_dir=str(session_masks_dir),
                         calibration_corners=corners,
                         seed_points=seed_points,
                         mdf_points=mdf_points
@@ -406,6 +412,7 @@ def cmd_process(args):
                         f"is_testing={is_testing}"
                     )
                     if len(seg_results) > 0 and getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
+                        any_adjusted = False
                         for i in range(len(seg_results)):
                             primary_metrics = seg_results[i]
                             adjusted_contour, was_adjusted = interactive.adjust_contour(
@@ -420,6 +427,18 @@ def cmd_process(args):
                                 new_metrics["contour_index"] = i
                                 new_metrics["image_name"] = img_path.stem
                                 seg_results[i] = new_metrics
+                                any_adjusted = True
+                                
+                        if any_adjusted:
+                            # Recriar e salvar a máscara atualizada com todos os contornos da imagem
+                            h, w = color.shape[:2]
+                            adjusted_mask = np.zeros((h, w), dtype=np.uint8)
+                            for r in seg_results:
+                                cv2.drawContours(adjusted_mask, [r["contour"]], -1, 255, -1)
+                            
+                            mask_path = session_masks_dir / f"{img_path.stem}_mask.png"
+                            cv2.imwrite(str(mask_path), adjusted_mask)
+                            logger.info(f"  → Máscara ajustada salva em: {mask_path}")
 
                     # 3. Converter para mm e coletar resultados
                     all_metrics_mm = []
@@ -646,7 +665,7 @@ def cmd_cad_compare(args, precomputed_measurements=None):
                 idx = image_contour_counts.get(img_key, 0)
                 image_contour_counts[img_key] = idx + 1
                 
-                mask_path = Path(config.MASKS_DIR) / f"{image_name}_mask.png"
+                mask_path = Path(config.OUTPUT_DIR) / args.session / "masks" / state / view_mode / f"{image_name}_mask.png"
                 if mask_path.exists():
                     mask_img = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
                     if mask_img is not None:
