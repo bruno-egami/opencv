@@ -367,15 +367,15 @@ def cmd_process(args):
 
                     # 2. Coleta de seed points (peça + MDF) para segmentação
                     seed_points = []
-                    mdf_point = None
+                    mdf_points = []
                     if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
                         logger.info(f"  [Seed] Solicitando identificação das pecas e fundo...")
-                        seed_points, mdf_point = interactive.get_seed_points(
+                        seed_points, mdf_points = interactive.get_seed_points(
                             color,
                             window_title=f"Identificar Pecas e Fundo - {img_path.name}"
                         )
-                        if len(seed_points) > 0 and mdf_point is not None:
-                            logger.info(f"  [Seed] {len(seed_points)} peças marcadas, MDF=({mdf_point[0]},{mdf_point[1]})")
+                        if len(seed_points) > 0 and len(mdf_points) > 0:
+                            logger.info(f"  [Seed] {len(seed_points)} peças marcadas, MDF={mdf_points}")
                         else:
                             logger.warning("  [Seed] Seed points não fornecidos. Segmentação sem seeds.")
 
@@ -386,7 +386,7 @@ def cmd_process(args):
                         strategy=args.strategy,
                         calibration_corners=corners,
                         seed_points=seed_points,
-                        mdf_point=mdf_point
+                        mdf_points=mdf_points
                     )
 
                     # Ordenar contornos pela posição X (esquerda para a direita) apenas se não houver sementes

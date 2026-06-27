@@ -430,8 +430,8 @@ class InteractiveSeedPointCollector:
         
         # Pontos coletados
         self.piece_points = []    # Cliques: dentro da(s) peça(s)
-        self.mdf_point = None     # Clique: no MDF
-        self.current_step = 0     # 0 = esperando cliques nas peças, 1 = esperando clique no MDF
+        self.mdf_points = []      # Cliques: no MDF
+        self.current_step = 0     # 0 = esperando cliques nas peças, 1 = esperando cliques no MDF
         
         # Dimensões da janela
         img_h, img_w = self.img.shape[:2]
@@ -480,29 +480,24 @@ class InteractiveSeedPointCollector:
     def mouse_callback(self, event, x, y, flags, param):
         self.mouse_x = x
         self.mouse_y = y
-        ix, iy = self.to_image((x, y))
         
-        # Zoom
+        # Rolagem do mouse: Zoom in / Zoom out
         if event == cv2.EVENT_MOUSEWHEEL:
-            signed_flags = ctypes.c_int32(flags).value
-            zoom_factor = 1.15 if signed_flags > 0 else (1.0 / 1.15)
-            new_s = self.s * zoom_factor
-            if 0.05 <= new_s <= 100.0:
-                self.s = new_s
-                self.tx = x - self.s * ix
-                self.ty = y - self.s * iy
-                
-        # Click Esquerdo — registrar ponto
+            zoom_factor = 1.1 if flags > 0 else 1.0 / 1.1
+            x_i, y_i = self.to_image((x, y))
+            self.s *= zoom_factor
+            self.tx = x - x_i * self.s
+            self.ty = y - y_i * self.s
+
+        # Clique esquerdo: Adicionar ponto
         elif event == cv2.EVENT_LBUTTONDOWN:
-            img_h, img_w = self.img.shape[:2]
-            ix_c = max(0, min(img_w - 1, int(round(ix))))
-            iy_c = max(0, min(img_h - 1, int(round(iy))))
+            x_i, y_i = self.to_image((x, y))
+            ix_c, iy_c = int(round(x_i)), int(round(y_i))
             
             if self.current_step == 0:
                 self.piece_points.append((ix_c, iy_c))
             elif self.current_step == 1:
-                self.mdf_point = (ix_c, iy_c)
-                self.current_step = 2  # Ambos coletados
+                self.mdf_points.append((ix_c, iy_c))
                 
         # Pan (click direito)
         elif event == cv2.EVENT_RBUTTONDOWN:
@@ -551,11 +546,11 @@ class InteractiveSeedPointCollector:
                 cv2.circle(view, sp, 18, (0, 255, 0), 2, cv2.LINE_AA)
                 cv2.putText(view, f"PECA {idx+1}", (sp[0] + 22, sp[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
                 
-            if self.mdf_point is not None:
-                sp = self.to_screen(self.mdf_point)
+            for idx, pt in enumerate(self.mdf_points):
+                sp = self.to_screen(pt)
                 cv2.drawMarker(view, sp, (0, 180, 255), cv2.MARKER_CROSS, 30, 2, cv2.LINE_AA)
                 cv2.circle(view, sp, 18, (0, 180, 255), 2, cv2.LINE_AA)
-                cv2.putText(view, "MDF", (sp[0] + 22, sp[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1, cv2.LINE_AA)
+                cv2.putText(view, f"FUNDO {idx+1}", (sp[0] + 22, sp[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1, cv2.LINE_AA)
             
             # Crosshair no cursor (indicando próximo clique)
             if self.current_step < 2:
@@ -576,7 +571,8 @@ class InteractiveSeedPointCollector:
                 step_text = f">>> PASSO 1/2: Clique nas pecas ceramicas ({n_pecas} marcada{'s' if n_pecas != 1 else ''}). [Enter] para avancar <<<"
                 step_color = (100, 255, 100)
             elif self.current_step == 1:
-                step_text = ">>> PASSO 2/2: Clique em um ponto na superficie do MDF (fundo) <<<"
+                n_fundo = len(self.mdf_points)
+                step_text = f">>> PASSO 2/2: Clique em um ou mais pontos de fundo (MDF/Preto) ({n_fundo} marcado{'s' if n_fundo != 1 else ''}). [Enter] para concluir <<<"
                 step_color = (100, 200, 255)
             else:
                 step_text = "Pontos coletados! Pressione [Enter] para confirmar ou [R] para refazer"
@@ -598,7 +594,7 @@ class InteractiveSeedPointCollector:
             if val in [13, 32]:
                 if self.current_step == 0 and len(self.piece_points) > 0:
                     self.current_step = 1
-                elif self.current_step >= 1 and self.mdf_point is not None:
+                elif self.current_step >= 1 and len(self.mdf_points) > 0:
                     self.confirmed = True
                     break
                     
@@ -615,7 +611,7 @@ class InteractiveSeedPointCollector:
             # R — refazer
             elif val in [ord('r'), ord('R')]:
                 self.piece_points = []
-                self.mdf_point = None
+                self.mdf_points = []
                 self.current_step = 0
                 self.s = self.default_s
                 self.tx = self.default_tx
@@ -623,22 +619,22 @@ class InteractiveSeedPointCollector:
                 
         cv2.destroyWindow(self.window_title)
         
-        if self.confirmed and len(self.piece_points) > 0 and self.mdf_point is not None:
-            return self.piece_points, self.mdf_point
+        if self.confirmed and len(self.piece_points) > 0 and len(self.mdf_points) > 0:
+            return self.piece_points, self.mdf_points
         else:
-            return [], None
+            return [], []
 
 
 def get_seed_points(image, window_title="Identificacao da Peca e Fundo"):
     """
-    Interface pública para coletar os 2 pontos-semente interativos.
+    Interface pública para coletar pontos-semente interativos (vários para peça e fundo).
     
     Args:
         image: Imagem colorida original (BGR, uint8)
         window_title: Título da janela
         
     Returns:
-        tuple: (list_of_piece_points, mdf_point) — cada ponto é (x, y). Retorna ([], None) se cancelado
+        tuple: (list_of_piece_points, list_of_mdf_points) — cada ponto é (x, y). Retorna ([], []) se cancelado
     """
     import sys
     is_testing = "pytest" in sys.modules
@@ -646,14 +642,14 @@ def get_seed_points(image, window_title="Identificacao da Peca e Fundo"):
         # Em modo de teste, retornar o centro da imagem como seed da peça
         # e um canto como seed do MDF
         h, w = image.shape[:2]
-        return [(w // 2, h // 2)], (10, 10)
+        return [(w // 2, h // 2)], [(10, 10)]
     
     try:
         collector = InteractiveSeedPointCollector(image, window_title)
         return collector.run()
     except Exception as e:
         logger.error(f"Erro na coleta de seed points: {e}. Continuando sem seeds.")
-        return [], None
+        return [], []
 
 
 # Caches em memória persistentes durante a execução do processo
