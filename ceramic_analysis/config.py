@@ -80,6 +80,20 @@ BG_SUB_NORMALIZE_BRIGHTNESS = True
 # Valores menores capturam mais bordas; maiores são mais restritivos.
 LAB_B_SIGMA_FACTOR = 2.0
 
+# ── Segmentação baseada em sombra (shadow_band) ──
+# delta_low: quanto mais escuro que o MDF o pixel deve ser para ser considerado sombra
+SHADOW_BAND_DELTA_LOW = 15
+# Erosão física em mm para encolher o contorno em direção à borda real da peça (default: 0.25 mm)
+SHADOW_BAND_EROSION_MM = 0.25
+# Erosão física assimétrica apenas na base da peça em mm para puxar a borda inferior para cima (default: 0.4 mm)
+SHADOW_BAND_BOTTOM_SHIFT_MM = 0.4
+# Tamanho da janela de suavização do contorno (média móvel, deve ser ímpar, default: 19)
+SHADOW_BAND_SMOOTH_WINDOW = 19
+# Habilitar fechamento convexo do contorno (desabilitado para seguir a sinuosidade dos cantos)
+SHADOW_BAND_CONVEX_HULL = False
+# Limiar mínimo de cinza para ignorar a mesa preta externa (que tem cinza ~40)
+SHADOW_BAND_MIN_GRAY = 70
+
 # ── Threshold adaptativo ──
 # Usado quando SEGMENTATION_STRATEGY = "adaptive"
 ADAPTIVE_BLOCK_SIZE = 51     # Tamanho do bloco para cálculo da média local (ímpar)

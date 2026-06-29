@@ -1026,7 +1026,7 @@ Exemplos:
     )
     p_proc.add_argument(
         "--strategy",
-        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
+        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "shadow_band", "auto"],
         default="auto",
         help="Estratégia de segmentação (default: auto)"
     )
@@ -1059,7 +1059,7 @@ Exemplos:
     p_full.add_argument("--state", choices=["wet", "dry", "both"], default="both")
     p_full.add_argument(
         "--strategy",
-        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
+        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "shadow_band", "auto"],
         default="auto"
     )
 # --perspective-correction removed
@@ -1090,7 +1090,7 @@ Exemplos:
     p_cad.add_argument("--state", choices=["wet", "dry", "both"], default="both")
     p_cad.add_argument(
         "--strategy",
-        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "auto"],
+        choices=["grabcut_seeded", "background_sub", "lab", "otsu", "adaptive", "yellow", "shadow_band", "auto"],
         default="auto"
     )
 # --perspective-correction removed

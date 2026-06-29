@@ -1384,7 +1384,8 @@ def segment(
     masks_dir: str = None,
     calibration_corners: np.ndarray = None,
     seed_points: list = None,
-    mdf_points: list = None
+    mdf_points: list = None,
+    shadow_points: list = None
 ) -> list:
     """
     Segmenta o corpo de prova na imagem e extrai métricas geométricas.
@@ -1460,6 +1461,10 @@ def segment(
 
         # 1. Se o usuário forneceu sementes
         if seed_points is not None and len(seed_points) > 0 and mdf_points is not None and len(mdf_points) > 0:
+            if not blue_tape_found:
+                # Vista superior: prioridade total para shadow_band automática
+                strategies_to_try.append(("shadow_band", None))
+
             if blue_tape_found:
                 # Com a fita azul garantindo um fundo perfeitamente limpo na vista frontal,
                 # o Otsu puro faz uma segmentação infinitamente superior (imune às texturas da peça).
@@ -1507,7 +1512,8 @@ def segment(
                     piece_is_lighter=piece_is_lighter,
                     seed_points=seed_points,
                     mdf_points=mdf_points,
-                    calibration_corners=calibration_corners
+                    calibration_corners=calibration_corners,
+                    shadow_points=shadow_points
                 )
                 candidate_mask = check_and_correct_inversion(candidate_mask)
                 candidate_mask = postprocess_mask(candidate_mask)
@@ -1523,6 +1529,7 @@ def segment(
                 if quality["is_good"]:
                     mask = candidate_mask
                     logger.info(f"  ✓ Estratégia selecionada: '{strat_name}'")
+                    strategy = strat_name
                     break
             except Exception as e:
                 logger.debug(f"  Auto: '{strat_name}' falhou: {e}")
@@ -1538,7 +1545,8 @@ def segment(
             piece_is_lighter=piece_is_lighter,
             seed_points=seed_points,
             mdf_points=mdf_points,
-            calibration_corners=calibration_corners
+            calibration_corners=calibration_corners,
+            shadow_points=shadow_points
         )
         mask = check_and_correct_inversion(mask)
         mask = postprocess_mask(mask)
@@ -1678,6 +1686,16 @@ def segment(
             logger.info(
                 f"  Ordenados {len(valid_contours)} contornos por score (área × centroide)."
             )
+
+    # Suavização de contorno específica para shadow_band
+    if strategy == "shadow_band" and len(valid_contours) > 0:
+        logger.info("    [Shadow Band] Aplicando suavização de contorno (moving average)...")
+        win_size = getattr(config, "SHADOW_BAND_SMOOTH_WINDOW", 15)
+        valid_contours = [smooth_contour(c, window_size=win_size) for c in valid_contours]
+        
+        if getattr(config, "SHADOW_BAND_CONVEX_HULL", True):
+            logger.info("    [Shadow Band] Aplicando Convex Hull para fechar reentrâncias...")
+            valid_contours = [cv2.convexHull(c) for c in valid_contours]
 
     if not valid_contours:
         _raise_segmentation_error(image_name, strategy, background)
@@ -1966,6 +1984,140 @@ def segment_watershed_seeded(
         
     return mask
 
+def smooth_contour(contour: np.ndarray, window_size: int = 31) -> np.ndarray:
+    """
+    Aplica um filtro de média móvel com padding circular nos pontos do contorno
+    para suavizar e remover irregularidades/pontas.
+    """
+    if len(contour) < window_size:
+        return contour
+    
+    x = contour[:, 0, 0]
+    y = contour[:, 0, 1]
+    
+    pad = window_size // 2
+    x_padded = np.concatenate([x[-pad:], x, x[:pad]])
+    y_padded = np.concatenate([y[-pad:], y, y[:pad]])
+    
+    kernel = np.ones(window_size) / window_size
+    x_smooth = np.convolve(x_padded, kernel, mode='valid')
+    y_smooth = np.convolve(y_padded, kernel, mode='valid')
+    
+    smoothed = np.zeros_like(contour)
+    smoothed[:, 0, 0] = np.round(x_smooth)
+    smoothed[:, 0, 1] = np.round(y_smooth)
+    return smoothed.astype(np.int32)
+
+
+def segment_shadow_band(
+    image_color: np.ndarray,
+    seed_points: list,
+    mdf_points: list,
+    shadow_points: list = None,
+    calibration_corners: np.ndarray = None
+) -> np.ndarray:
+    """
+    Segmentação por rejeição de banda em relação ao MDF, baseada em sementes de cor.
+    Qualquer pixel significativamente mais claro (peça) ou mais escuro (sombra)
+    que o MDF é considerado objeto.
+    A faixa é calculada de forma adaptativa a partir das intensidades médias
+    amostradas nos seed_points, mdf_points e opcionalmente shadow_points.
+    """
+    h_orig, w_orig = image_color.shape[:2]
+    
+    # Converter para escala de cinza e aplicar desfoque suave para reduzir ruído de textura
+    gray = cv2.cvtColor(image_color, cv2.COLOR_BGR2GRAY) if len(image_color.shape) == 3 else image_color.copy()
+    blurred = cv2.GaussianBlur(gray, (9, 9), 0)
+    
+    # Amostrar os valores de cinza nos pontos clicados pelo usuário
+    # Usamos uma janela pequena 5x5 ao redor de cada ponto para robustez contra ruído de pixel único
+    patch_r = 2
+    
+    def get_mean_val(pts):
+        vals = []
+        for pt in pts:
+            px, py = int(pt[0]), int(pt[1])
+            y1 = max(0, py - patch_r)
+            y2 = min(h_orig, py + patch_r + 1)
+            x1 = max(0, px - patch_r)
+            x2 = min(w_orig, px + patch_r + 1)
+            vals.append(np.mean(blurred[y1:y2, x1:x2]))
+        return np.mean(vals)
+        
+    v_mdf = get_mean_val(mdf_points)
+    v_piece = get_mean_val(seed_points)
+    
+    # Calcular limiares de corte
+    if shadow_points is not None and len(shadow_points) > 0:
+        v_shadow = get_mean_val(shadow_points)
+        t_shadow_max = (v_mdf + v_shadow) / 2.0
+        logger.info(f"  [Shadow Band] Amostras de cinza -> MDF: {v_mdf:.1f}, Peca: {v_piece:.1f}, Sombra (Manual): {v_shadow:.1f}")
+    else:
+        delta_low = getattr(config, "SHADOW_BAND_DELTA_LOW", 30)
+        t_shadow_max = v_mdf - delta_low
+        logger.info(f"  [Shadow Band] Amostras de cinza -> MDF: {v_mdf:.1f}, Peca: {v_piece:.1f}. Sombra (Auto): <= {t_shadow_max:.1f} (MDF - {delta_low})")
+        
+    t_piece_min = (v_mdf + v_piece) / 2.0
+    
+    # Adicionar uma margem de segurança caso a diferença seja muito pequena
+    t_shadow_max = min(t_shadow_max, v_mdf - 15)
+    t_piece_min = max(t_piece_min, v_mdf + 15)
+    
+    logger.info(f"  [Shadow Band] Limiares calculados -> Sombra <= {t_shadow_max:.1f}, Peca >= {t_piece_min:.1f}")
+    
+    # Limiar mínimo de cinza para ignorar a mesa preta externa (que tem cinza ~40)
+    min_gray = getattr(config, "SHADOW_BAND_MIN_GRAY", 70)
+    
+    # Criar máscara binária
+    mask_piece = (blurred >= t_piece_min)
+    mask_shadow = (blurred <= t_shadow_max) & (blurred > min_gray)
+    
+    mask = np.zeros_like(gray)
+    mask[mask_piece | mask_shadow] = 255
+    
+    # 1. Abertura morfológica para eliminar ruídos isolados (pequenos pontos no MDF)
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open)
+    
+    # 2. Fechamento morfológico para conectar a peça e a sombra (usando kernel 45x45 para evitar reentrâncias nas pontas)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (45, 45))
+    mask_closed = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel_close)
+    
+    # 3. Erosão física da máscara para ajustar o contorno mais próximo da peça física
+    erosion_mm = getattr(config, "SHADOW_BAND_EROSION_MM", 0.5)
+    px_per_mm = 1.0
+    if calibration_corners is not None and len(calibration_corners) > 0:
+        import metrology
+        try:
+            scale = metrology.calibrate_scale_from_block(calibration_corners)
+            px_per_mm = (scale["px_per_mm_h"] + scale["px_per_mm_v"]) / 2.0
+        except Exception:
+            pass
+    scale_val = px_per_mm if px_per_mm > 1.0 else 17.0
+
+    # 3a. Erosão Simétrica
+    if erosion_mm > 0:
+        erosion_px = erosion_mm * scale_val
+        k_size = int(round(2 * erosion_px + 1))
+        if k_size % 2 == 0:
+            k_size += 1
+        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+        mask_closed = cv2.erode(mask_closed, kernel_erode)
+        logger.info(f"  [Shadow Band] Aplicada erosão simétrica de {erosion_mm} mm ({erosion_px:.1f} px, kernel {k_size}x{k_size})")
+
+    # 3b. Erosão Assimétrica na Base (Deslocamento para cima da borda inferior)
+    bottom_shift_mm = getattr(config, "SHADOW_BAND_BOTTOM_SHIFT_MM", 0.0)
+    if bottom_shift_mm > 0:
+        shift_y_px = int(round(bottom_shift_mm * scale_val))
+        if shift_y_px > 0:
+            shifted = np.zeros_like(mask_closed)
+            shifted[:-shift_y_px, :] = mask_closed[shift_y_px:, :]
+            mask_closed = cv2.bitwise_and(mask_closed, shifted)
+            logger.info(f"  [Shadow Band] Aplicada erosão assimétrica na base de {bottom_shift_mm} mm ({shift_y_px} px)")
+        
+    return mask_closed
+
+
 def _apply_strategy(
     strategy: str,
     gray_blurred: np.ndarray,
@@ -1974,10 +2126,19 @@ def _apply_strategy(
     piece_is_lighter: bool = False,
     seed_points: list = None,
     mdf_points: list = None,
-    calibration_corners: np.ndarray = None
+    calibration_corners: np.ndarray = None,
+    shadow_points: list = None
 ) -> np.ndarray:
     """Aplica uma estratégia de segmentação específica."""
-    if strategy == "watershed_seeded":
+    if strategy == "shadow_band":
+        if seed_points is None or len(seed_points) == 0 or mdf_points is None or len(mdf_points) == 0:
+            raise ValueError("Estratégia 'shadow_band' requer seed_points e mdf_points.")
+        return segment_shadow_band(
+            image_color, seed_points, mdf_points, shadow_points,
+            calibration_corners=calibration_corners
+        )
+
+    elif strategy == "watershed_seeded":
         if seed_points is None or len(seed_points) == 0 or mdf_points is None or len(mdf_points) == 0:
             raise ValueError("Estratégia 'watershed_seeded' requer seed_points e mdf_points.")
         return segment_watershed_seeded(

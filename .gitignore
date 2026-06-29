@@ -29,3 +29,6 @@ xcuserdata/
 
 desktop.ini
 [Dd]esktop.ini
+
+# Ceramic analysis temporary/diagnostic outputs
+ceramic_analysis/diag_output/
