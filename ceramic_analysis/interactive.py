@@ -81,6 +81,7 @@ class InteractiveContourEditor:
         # Flags de controle
         self.confirmed = False
         self.was_adjusted = False
+        self.action = "cancel"
         
     def to_screen(self, pt):
         """Converte coordenadas da imagem para coordenadas da tela (janela)."""
@@ -283,7 +284,7 @@ class InteractiveContourEditor:
             instructions = [
                 "Criar Remendo: Click esquerdo para adicionar pontos  |  Zoom: Scroll Mouse  |  Mover: Click direito + arrastar",
                 f"Aplicar Remendo: [A] para Fundir (Adicionar)  |  [S] para Cortar (Subtrair)  |  Realce [C]: {status_contrast}",
-                "Remover Ponto: [Backspace] / [Delete]  |  Resetar: [R]  |  Confirmar: [Enter]  |  Cancelar: [Esc]"
+                "Remover Ponto: [Backspace] / [Delete]  |  Resetar: [R]  |  Voltar p/ Seeds: [V]  |  Confirmar: [Enter]  |  Cancelar: [Esc]"
             ]
             for i, text in enumerate(instructions):
                 cv2.putText(view, text, (20, 30 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (240, 240, 240), 1, cv2.LINE_AA)
@@ -300,12 +301,17 @@ class InteractiveContourEditor:
             
             # Enter (13) ou Espaço (32) para Confirmar
             if val in [13, 32]:
-                self.confirmed = True
+                self.action = "confirm"
                 break
                 
             # Esc (27) ou 'q'/'Q' para Cancelar
             elif val in [27, ord('q'), ord('Q')]:
-                self.confirmed = False
+                self.action = "cancel"
+                break
+
+            # 'v'/'V' ou 'b'/'B' para Voltar para as seeds (Voltar / Back)
+            elif val in [ord('v'), ord('V'), ord('b'), ord('B')]:
+                self.action = "back_to_seeds"
                 break
                 
             # 'c'/'C' para alternar realce de contraste
@@ -343,10 +349,14 @@ class InteractiveContourEditor:
                     
         cv2.destroyWindow(self.window_title)
         
-        if self.confirmed and self.was_adjusted:
-            return self.current_contour, True
+        if self.action == "back_to_seeds":
+            return self.original_contour, "back_to_seeds"
+        elif self.action == "confirm" and self.was_adjusted:
+            return self.current_contour, "adjusted"
+        elif self.action == "confirm":
+            return self.original_contour, "confirmed"
         else:
-            return self.original_contour, False
+            return self.original_contour, "cancelled"
 
 
 class InteractiveSeedPointCollector:
@@ -604,14 +614,14 @@ def adjust_contour(image, auto_contour, window_title="Ajuste de Contorno"):
         window_title: Título da janela OpenCV
         
     Returns:
-        tuple: (contour_ajustado, foi_ajustado_bool)
+        tuple: (contour_ajustado, status)
     """
     try:
         editor = InteractiveContourEditor(image, auto_contour, window_title)
         return editor.run()
     except Exception as e:
         logger.error(f"Erro no ajuste manual de contorno: {e}. Mantendo contorno original.")
-        return auto_contour, False
+        return auto_contour, "error"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

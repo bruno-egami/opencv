@@ -365,80 +365,93 @@ def cmd_process(args):
                             "view_mode": view
                         }
 
-                    # 2. Coleta de seed points (peça + MDF) para segmentação
-                    seed_points = []
-                    mdf_points = []
-                    if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
-                        logger.info(f"  [Seed] Solicitando identificação das pecas e fundo...")
-                        seed_points, mdf_points = interactive.get_seed_points(
-                            color,
-                            window_title=f"Identificar Pecas e Fundo - {img_path.name}"
-                        )
-                        if len(seed_points) > 0 and len(mdf_points) > 0:
-                            logger.info(f"  [Seed] {len(seed_points)} peças marcadas, MDF={mdf_points}")
-                        else:
-                            logger.warning("  [Seed] Seed points não fornecidos. Segmentação sem seeds.")
-
-                    # Definir pasta de máscaras específica para a sessão, estado e vista
-                    session_masks_dir = Path(config.OUTPUT_DIR) / args.session / "masks" / state / view
-                    session_masks_dir.mkdir(parents=True, exist_ok=True)
-
-                    # 3. Segmentação
-                    seg_results = segmentation.segment(
-                        gray, color, img_path.stem,
-                        background=background,
-                        strategy=args.strategy,
-                        save_mask=True,
-                        masks_dir=str(session_masks_dir),
-                        calibration_corners=corners,
-                        seed_points=seed_points,
-                        mdf_points=mdf_points
-                    )
-
-                    # Ordenar contornos pela posição X (esquerda para a direita) apenas se não houver sementes
-                    if not seed_points or len(seed_points) == 0:
-                        seg_results.sort(key=lambda x: x.get("bbox_x", 0))
-
-                    # Atribuir IDs sistemáticos baseados na ordenação
-                    for i, metrics in enumerate(seg_results):
-                        metrics["contour_index"] = i
-                        metrics["image_name"] = img_path.stem
-
-                    # Ajuste manual interativo iterativo
-                    import sys
-                    is_testing = "pytest" in sys.modules
-                    logger.info(
-                        f"  [Contorno] INTERACTIVE_CALIBRATION={getattr(config, 'INTERACTIVE_CALIBRATION', True)}, "
-                        f"is_testing={is_testing}"
-                    )
-                    if len(seg_results) > 0 and getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
-                        any_adjusted = False
-                        for i in range(len(seg_results)):
-                            primary_metrics = seg_results[i]
-                            adjusted_contour, was_adjusted = interactive.adjust_contour(
+                    # 2. Coleta de seed points (peça + MDF) para segmentação e ajuste interativo em loop
+                    retry_seeds = True
+                    while retry_seeds:
+                        retry_seeds = False
+                        
+                        seed_points = []
+                        mdf_points = []
+                        if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
+                            logger.info(f"  [Seed] Solicitando identificação das pecas e fundo...")
+                            seed_points, mdf_points = interactive.get_seed_points(
                                 color,
-                                primary_metrics["contour"],
-                                window_title=f"Ajuste Manual P{i+1}/{len(seg_results)} - {img_path.name}"
+                                window_title=f"Identificar Pecas e Fundo - {img_path.name}"
                             )
-                            if was_adjusted:
-                                logger.info(f"  → Contorno P{i+1} ajustado manualmente para {img_path.name}")
-                                # Recalcular métricas para o contorno ajustado
-                                new_metrics = segmentation.extract_contour_metrics(adjusted_contour)
-                                new_metrics["contour_index"] = i
-                                new_metrics["image_name"] = img_path.stem
-                                seg_results[i] = new_metrics
-                                any_adjusted = True
+                            if len(seed_points) > 0 and len(mdf_points) > 0:
+                                logger.info(f"  [Seed] {len(seed_points)} peças marcadas, MDF={mdf_points}")
+                            else:
+                                logger.warning("  [Seed] Seed points não fornecidos. Segmentação sem seeds.")
+    
+                        # Definir pasta de máscaras específica para a sessão, estado e vista
+                        session_masks_dir = Path(config.OUTPUT_DIR) / args.session / "masks" / state / view
+                        session_masks_dir.mkdir(parents=True, exist_ok=True)
+    
+                        # 3. Segmentação
+                        seg_results = segmentation.segment(
+                            gray, color, img_path.stem,
+                            background=background,
+                            strategy=args.strategy,
+                            save_mask=True,
+                            masks_dir=str(session_masks_dir),
+                            calibration_corners=corners,
+                            seed_points=seed_points,
+                            mdf_points=mdf_points
+                        )
+    
+                        # Ordenar contornos pela posição X (esquerda para a direita) apenas se não houver sementes
+                        if not seed_points or len(seed_points) == 0:
+                            seg_results.sort(key=lambda x: x.get("bbox_x", 0))
+    
+                        # Atribuir IDs sistemáticos baseados na ordenação
+                        for i, metrics in enumerate(seg_results):
+                            metrics["contour_index"] = i
+                            metrics["image_name"] = img_path.stem
+    
+                        # Ajuste manual interativo iterativo
+                        import sys
+                        is_testing = "pytest" in sys.modules
+                        logger.info(
+                            f"  [Contorno] INTERACTIVE_CALIBRATION={getattr(config, 'INTERACTIVE_CALIBRATION', True)}, "
+                            f"is_testing={is_testing}"
+                        )
+                        if len(seg_results) > 0 and getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
+                            any_adjusted = False
+                            for i in range(len(seg_results)):
+                                primary_metrics = seg_results[i]
+                                adjusted_contour, status = interactive.adjust_contour(
+                                    color,
+                                    primary_metrics["contour"],
+                                    window_title=f"Ajuste Manual P{i+1}/{len(seg_results)} - {img_path.name}"
+                                )
+                                if status == "back_to_seeds":
+                                    logger.info("  [Contorno] Usuário solicitou retornar para etapa das seeds.")
+                                    retry_seeds = True
+                                    break
+                                    
+                                was_adjusted = (status == "adjusted")
+                                if was_adjusted:
+                                    logger.info(f"  → Contorno P{i+1} ajustado manualmente para {img_path.name}")
+                                    # Recalcular métricas para o contorno ajustado
+                                    new_metrics = segmentation.extract_contour_metrics(adjusted_contour)
+                                    new_metrics["contour_index"] = i
+                                    new_metrics["image_name"] = img_path.stem
+                                    seg_results[i] = new_metrics
+                                    any_adjusted = True
+                                    
+                            if retry_seeds:
+                                continue
+                                    
+                            if any_adjusted:
+                                # Recriar e salvar a máscara atualizada com todos os contornos da imagem
+                                h, w = color.shape[:2]
+                                adjusted_mask = np.zeros((h, w), dtype=np.uint8)
+                                for r in seg_results:
+                                    cv2.drawContours(adjusted_mask, [r["contour"]], -1, 255, -1)
                                 
-                        if any_adjusted:
-                            # Recriar e salvar a máscara atualizada com todos os contornos da imagem
-                            h, w = color.shape[:2]
-                            adjusted_mask = np.zeros((h, w), dtype=np.uint8)
-                            for r in seg_results:
-                                cv2.drawContours(adjusted_mask, [r["contour"]], -1, 255, -1)
-                            
-                            mask_path = session_masks_dir / f"{img_path.stem}_mask.png"
-                            cv2.imwrite(str(mask_path), adjusted_mask)
-                            logger.info(f"  → Máscara ajustada salva em: {mask_path}")
+                                mask_path = session_masks_dir / f"{img_path.stem}_mask.png"
+                                cv2.imwrite(str(mask_path), adjusted_mask)
+                                logger.info(f"  → Máscara ajustada salva em: {mask_path}")
 
                     # 3. Converter para mm e coletar resultados
                     all_metrics_mm = []
