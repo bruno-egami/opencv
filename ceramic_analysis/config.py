@@ -183,6 +183,7 @@ INTERACTIVE_WINDOW_WIDTH = 1200     # Largura da janela de ajuste (px)
 INTERACTIVE_VERTEX_RADIUS = 8       # Raio dos círculos dos vértices (px)
 INTERACTIVE_SNAP_DISTANCE = 15      # Distância máxima para "grudar" em um vértice (px)
 INTERACTIVE_CALIBRATION = True      # Ativar calibração interativa de grade/MDF
+INTERACTIVE_ROI_SELECTION = True    # Ativar seleção interativa da Região de Interesse (ROI)
 
 # Os fatores de ajuste fino de escala não são mais necessários na calibração coplanar
 # pois a face de calibração está no mesmo plano da peça a ser medida.

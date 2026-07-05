@@ -144,6 +144,57 @@ def extract_sample_id(filename: str) -> str:
     return stem
 
 
+def shift_metrics_coordinates(metrics: dict, dx: int, dy: int) -> dict:
+    """Desloca todas as métricas baseadas em pixels pelo offset (dx, dy)."""
+    if dx == 0 and dy == 0:
+        return metrics
+        
+    shifted = dict(metrics)
+    
+    # 1. Contorno e Hull
+    if "contour" in shifted and shifted["contour"] is not None:
+        shifted["contour"] = shifted["contour"] + [dx, dy]
+    if "hull" in shifted and shifted["hull"] is not None:
+        shifted["hull"] = shifted["hull"] + [dx, dy]
+        
+    # 2. Bounding Box
+    if "bbox_x" in shifted:
+        shifted["bbox_x"] += dx
+    if "bbox_y" in shifted:
+        shifted["bbox_y"] += dy
+        
+    # 3. Centro do retângulo mínimo
+    if "min_rect_center_x" in shifted:
+        shifted["min_rect_center_x"] += dx
+    if "min_rect_center_y" in shifted:
+        shifted["min_rect_center_y"] += dy
+        
+    # 4. Centro robusto
+    if "robust_center_x" in shifted:
+        shifted["robust_center_x"] += dx
+    if "robust_center_y" in shifted:
+        shifted["robust_center_y"] += dy
+        
+    # 5. Cantos (corners_px)
+    if "corners_px" in shifted and shifted["corners_px"] is not None:
+        shifted["corners_px"] = [[pt[0] + dx, pt[1] + dy] for pt in shifted["corners_px"]]
+        
+    # 6. Seções transversais (pontos de corte)
+    if "cross_width_pts" in shifted and shifted["cross_width_pts"] is not None:
+        new_w_pts = []
+        for p1, p2, pos in shifted["cross_width_pts"]:
+            new_w_pts.append(([p1[0] + dx, p1[1] + dy], [p2[0] + dx, p2[1] + dy], pos))
+        shifted["cross_width_pts"] = new_w_pts
+        
+    if "cross_length_pts" in shifted and shifted["cross_length_pts"] is not None:
+        new_l_pts = []
+        for p1, p2, pos in shifted["cross_length_pts"]:
+            new_l_pts.append(([p1[0] + dx, p1[1] + dy], [p2[0] + dx, p2[1] + dy], pos))
+        shifted["cross_length_pts"] = new_l_pts
+        
+    return shifted
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Comandos do pipeline
 # ──────────────────────────────────────────────────────────────────────────────
@@ -331,29 +382,83 @@ def cmd_process(args):
                         equalize=equalize
                     )
 
+                    # 1a. Seleção de ROI opcional
+                    x_roi, y_roi, w_roi, h_roi = 0, 0, 0, 0
+                    has_roi = False
+                    color_full = color.copy()
+                    
+                    import sys
+                    is_testing = "pytest" in sys.modules
+                    if getattr(config, "INTERACTIVE_ROI_SELECTION", True) and not is_testing:
+                        logger.info(f"  [ROI] Solicitando seleção de região de interesse...")
+                        roi = interactive.select_roi(
+                            color,
+                            window_title=f"Selecionar Regiao de Interesse - {img_path.name}"
+                        )
+                        if roi is not None:
+                            x_roi, y_roi, w_roi, h_roi = roi
+                            has_roi = True
+                            logger.info(f"  [ROI] Selecionada: x={x_roi}, y={y_roi}, w={w_roi}, h={h_roi}")
+                            
+                            # Recortar imagens para processamento local
+                            gray = gray[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
+                            color = color[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
+                        else:
+                            logger.info("  [ROI] Seleção ignorada/cancelada pelo usuário. Usando imagem completa.")
+
+                    background_roi = None
+                    if background is not None:
+                        if has_roi:
+                            background_roi = background[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
+                        else:
+                            background_roi = background.copy()
+
                     # 1b. Calibração de escala via bloco padrão coplanar na própria imagem
                     try:
-                        auto_corners = metrology.detect_calibration_block(color)
+                        auto_corners_local = metrology.detect_calibration_block(color)
                         
                         import sys
                         is_testing = "pytest" in sys.modules
                         logger.info(
                             f"  [Escala] INTERACTIVE_CALIBRATION={getattr(config, 'INTERACTIVE_CALIBRATION', True)}, "
-                            f"is_testing={is_testing}, auto_corners_found={auto_corners is not None}"
+                            f"is_testing={is_testing}, auto_corners_found={auto_corners_local is not None}"
                         )
-                        if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
-                            corners = interactive.validate_calibration_block_grid(
-                                color, auto_corners,
-                                pattern_size=config.CALIB_BLOCK_PATTERN_SIZE,
-                                cache_key=f"{view}_{img_path.name}"
-                            )
-                            if corners is None:
-                                raise metrology.MetrologyError("Calibração de bloco rejeitada/cancelada pelo usuário.")
-                        else:
-                            if auto_corners is None:
-                                raise metrology.MetrologyError("Bloco de calibração não detectado automaticamente.")
-                            corners = auto_corners
                         
+                        cache_key = f"{view}_{img_path.name}"
+                        corners = None
+                        
+                        # Primeiro verifica o cache (que armazena coordenadas globais)
+                        if cache_key in interactive._ADJUSTED_GRID_CACHE:
+                            logger.info(f"Usando malha do bloco de calibração do cache para: {cache_key}")
+                            corners = interactive._ADJUSTED_GRID_CACHE[cache_key]
+                            corners_local = corners.copy()
+                            if has_roi:
+                                corners_local[:, :, 0] -= x_roi
+                                corners_local[:, :, 1] -= y_roi
+                        else:
+                            if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
+                                corners_local = interactive.validate_calibration_block_grid(
+                                    color, auto_corners_local,
+                                    pattern_size=config.CALIB_BLOCK_PATTERN_SIZE,
+                                    cache_key=None  # Desabilitar cache interno para gerenciar globalmente aqui
+                                )
+                                if corners_local is None:
+                                    raise metrology.MetrologyError("Calibração de bloco rejeitada/cancelada pelo usuário.")
+                            else:
+                                if auto_corners_local is None:
+                                    raise metrology.MetrologyError("Bloco de calibração não detectado automaticamente.")
+                                corners_local = auto_corners_local
+                            
+                            # Mapeia de volta para coordenadas globais
+                            corners = corners_local.copy()
+                            if has_roi:
+                                corners[:, :, 0] += x_roi
+                                corners[:, :, 1] += y_roi
+                                
+                            # Salva no cache global
+                            interactive._ADJUSTED_GRID_CACHE[cache_key] = corners
+                        
+                        # O cálculo de escala funciona igualmente com corners locais ou globais
                         scale = metrology.calibrate_scale_from_block(corners)
                     except metrology.MetrologyError as e:
                         logger.warning(f"Calibração de escala falhou para {img_path.name}: {e}")
@@ -372,14 +477,22 @@ def cmd_process(args):
                         
                         seed_points = []
                         mdf_points = []
+                        seed_points_local = []
+                        mdf_points_local = []
                         if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing:
                             logger.info(f"  [Seed] Solicitando identificação das pecas e fundo...")
-                            seed_points, mdf_points = interactive.get_seed_points(
+                            seed_points_local, mdf_points_local = interactive.get_seed_points(
                                 color,
                                 window_title=f"Identificar Pecas e Fundo - {img_path.name}"
                             )
-                            if len(seed_points) > 0 and len(mdf_points) > 0:
-                                logger.info(f"  [Seed] {len(seed_points)} peças marcadas, MDF={mdf_points}")
+                            if len(seed_points_local) > 0 and len(mdf_points_local) > 0:
+                                logger.info(f"  [Seed] {len(seed_points_local)} peças marcadas, MDF={mdf_points_local}")
+                                if has_roi:
+                                    seed_points = [(sp[0] + x_roi, sp[1] + y_roi) for sp in seed_points_local]
+                                    mdf_points = [(mp[0] + x_roi, mp[1] + y_roi) for mp in mdf_points_local]
+                                else:
+                                    seed_points = seed_points_local
+                                    mdf_points = mdf_points_local
                             else:
                                 logger.warning("  [Seed] Seed points não fornecidos. Segmentação sem seeds.")
     
@@ -387,26 +500,38 @@ def cmd_process(args):
                         session_masks_dir = Path(config.OUTPUT_DIR) / args.session / "masks" / state / view
                         session_masks_dir.mkdir(parents=True, exist_ok=True)
     
-                        # 3. Segmentação
+                        # 3. Segmentação (executa na imagem recortada/local)
                         seg_results = segmentation.segment(
                             gray, color, img_path.stem,
-                            background=background,
+                            background=background_roi,
                             strategy=args.strategy,
-                            save_mask=True,
+                            save_mask=False,  # Salvar máscara global no pipeline
                             masks_dir=str(session_masks_dir),
-                            calibration_corners=corners,
-                            seed_points=seed_points,
-                            mdf_points=mdf_points
+                            calibration_corners=corners_local,
+                            seed_points=seed_points_local if has_roi else seed_points,
+                            mdf_points=mdf_points_local if has_roi else mdf_points
                         )
     
                         # Ordenar contornos pela posição X (esquerda para a direita) apenas se não houver sementes
                         if not seed_points or len(seed_points) == 0:
                             seg_results.sort(key=lambda x: x.get("bbox_x", 0))
     
+                        # Deslocar os contornos/métricas de volta para coordenadas globais
+                        if has_roi:
+                            seg_results = [shift_metrics_coordinates(r, x_roi, y_roi) for r in seg_results]
+                            
                         # Atribuir IDs sistemáticos baseados na ordenação
                         for i, metrics in enumerate(seg_results):
                             metrics["contour_index"] = i
                             metrics["image_name"] = img_path.stem
+                            
+                        # Salvar máscara global inicial
+                        h_full, w_full = color_full.shape[:2]
+                        initial_mask = np.zeros((h_full, w_full), dtype=np.uint8)
+                        for r in seg_results:
+                            cv2.drawContours(initial_mask, [r["contour"]], -1, 255, -1)
+                        mask_path = session_masks_dir / f"{img_path.stem}_mask.png"
+                        cv2.imwrite(str(mask_path), initial_mask)
     
                         # Ajuste manual interativo iterativo
                         import sys
@@ -419,9 +544,13 @@ def cmd_process(args):
                             any_adjusted = False
                             for i in range(len(seg_results)):
                                 primary_metrics = seg_results[i]
-                                adjusted_contour, status = interactive.adjust_contour(
-                                    color,
-                                    primary_metrics["contour"],
+                                
+                                # Obter contorno local para a janela do editor (que mostra color, imagem da ROI)
+                                local_contour = primary_metrics["contour"] - [x_roi, y_roi] if has_roi else primary_metrics["contour"]
+                                
+                                adjusted_contour_local, status = interactive.adjust_contour(
+                                    color,  # Imagem da ROI
+                                    local_contour,
                                     window_title=f"Ajuste Manual P{i+1}/{len(seg_results)} - {img_path.name}"
                                 )
                                 if status == "back_to_seeds":
@@ -432,8 +561,11 @@ def cmd_process(args):
                                 was_adjusted = (status == "adjusted")
                                 if was_adjusted:
                                     logger.info(f"  → Contorno P{i+1} ajustado manualmente para {img_path.name}")
-                                    # Recalcular métricas para o contorno ajustado
-                                    new_metrics = segmentation.extract_contour_metrics(adjusted_contour)
+                                    # Recalcular métricas para o contorno ajustado localmente
+                                    new_metrics = segmentation.extract_contour_metrics(adjusted_contour_local)
+                                    # Deslocar para coordenadas globais
+                                    if has_roi:
+                                        new_metrics = shift_metrics_coordinates(new_metrics, x_roi, y_roi)
                                     new_metrics["contour_index"] = i
                                     new_metrics["image_name"] = img_path.stem
                                     seg_results[i] = new_metrics
@@ -443,9 +575,8 @@ def cmd_process(args):
                                 continue
                                     
                             if any_adjusted:
-                                # Recriar e salvar a máscara atualizada com todos os contornos da imagem
-                                h, w = color.shape[:2]
-                                adjusted_mask = np.zeros((h, w), dtype=np.uint8)
+                                # Recriar e salvar a máscara atualizada com todos os contornos globais da imagem
+                                adjusted_mask = np.zeros((h_full, w_full), dtype=np.uint8)
                                 for r in seg_results:
                                     cv2.drawContours(adjusted_mask, [r["contour"]], -1, 255, -1)
                                 
@@ -479,7 +610,7 @@ def cmd_process(args):
                         # Desabilitar dim_background nas chamadas individuais, exceto se refatorarmos annotate_image.
                         # Para evitar escurecer N vezes, enviamos a lista completa para uma nova função
                         analysis.annotate_image_multiple(
-                            color, all_metrics_mm, str(ann_path),
+                            color_full, all_metrics_mm, str(ann_path),
                             scale=scale
                         )
 
