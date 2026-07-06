@@ -519,7 +519,7 @@ class InteractiveSeedPointCollector:
                 step_color = (100, 255, 100)
             elif self.current_step == 1:
                 n_fundo = len(self.mdf_points)
-                step_text = f">>> PASSO 2/2: Clique em um ou mais pontos de fundo (MDF/Preto) ({n_fundo} marcado{'s' if n_fundo != 1 else ''}). [Enter] para concluir <<<"
+                step_text = f">>> PASSO 2/2: Clique no MDF e EM FITAS/SUJEIRAS claras ({n_fundo} pontos). [Enter] p/ concluir <<<"
                 step_color = (100, 200, 255)
             else:
                 step_text = "Pontos coletados! Pressione [Enter] para confirmar ou [R] para refazer"

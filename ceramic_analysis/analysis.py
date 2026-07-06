@@ -415,7 +415,11 @@ def annotate_image(
         
     # Identificacao da peca
     if "sample_id" in metrics:
-        text_id = str(metrics["sample_id"]).split("_")[-1] # Apenas "P1", "P2", etc
+        text_id = str(metrics["sample_id"]).split("_")[-1] # Tenta pegar "P1", "P2", etc
+        
+        # Se extraiu o timestamp do arquivo (ex: "211154" de IMG_20260703_211154), limpa o texto
+        if text_id.isdigit() and len(text_id) >= 4:
+            text_id = ""
         
         # Obter bounding box upright para saber onde colocar o texto
         if "bbox_x" in metrics and "bbox_y" in metrics:
@@ -431,10 +435,11 @@ def annotate_image(
                 
             x_pos = int(x + bw / 2)
             
-            _draw_text_with_bg(
-                annotated, text_id, (x_pos, y_pos),
-                font_scale * 1.5, COLOR_TEXT, COLOR_TEXT_BG, thickness, center=True
-            )
+            if text_id:
+                _draw_text_with_bg(
+                    annotated, text_id, (x_pos, y_pos),
+                    font_scale * 1.5, COLOR_TEXT, COLOR_TEXT_BG, thickness, center=True
+                )
 
     if output_path is not None:
         output_path = Path(output_path)

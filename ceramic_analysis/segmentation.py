@@ -33,6 +33,35 @@ import preprocessing
 logger = logging.getLogger(__name__)
 
 
+def fill_hollow_mask(mask: np.ndarray) -> np.ndarray:
+    """
+    Preenche o interior de peças ocas ou impressas em modo vaso.
+    Aplica fechamento morfológico para conectar eventuais fendas nas paredes
+    e preenche todos os contornos internos (furos).
+    """
+    filled = mask.copy()
+    # 1. Fechamento morfológico forte para unir paredes desconexas (gap < ~15mm)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51))
+    filled = cv2.morphologyEx(filled, cv2.MORPH_CLOSE, kernel)
+    
+    # 2. Preencher buracos internos
+    contours_fill, _ = cv2.findContours(filled, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if contours_fill is not None and len(contours_fill) > 0:
+        cv2.drawContours(filled, contours_fill, -1, 255, -1)
+
+    # 3. Aplicar Convex Hull para garantir que o contorno em modo vaso
+    # seja fechado em uma geometria sólida mesmo se apenas fragmentos do anel foram identificados
+    contours_ext, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if len(contours_ext) > 0:
+        all_points = np.vstack(contours_ext)
+        hull = cv2.convexHull(all_points)
+        hull_mask = np.zeros_like(filled)
+        cv2.drawContours(hull_mask, [hull], 0, 255, -1)
+        return hull_mask
+        
+    return filled
+
+
 class SegmentationError(Exception):
     """Exceção quando nenhum contorno válido é encontrado."""
     pass
@@ -567,19 +596,24 @@ def evaluate_mask_quality(mask: np.ndarray) -> dict:
         mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
+    min_area = getattr(config, 'MIN_CONTOUR_AREA_PX', 5000)
+    if getattr(config, 'HOLLOW_SPECIMEN', False):
+        min_area = 500
+
     # Filtrar por área mínima, circularidade e aspect_ratio
     valid_contours = []
     for c in contours:
         area = cv2.contourArea(c)
-        if area >= config.MIN_CONTOUR_AREA_PX:
+        if area >= min_area:
             _, _, w, h = cv2.boundingRect(c)
             aspect_ratio = max(w / h, h / w) if h > 0 and w > 0 else 0
             perimeter = cv2.arcLength(c, True)
             circularity = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
             if circularity >= 0.05 and aspect_ratio <= 10.0:
                 # Rejeitar contornos que cobrem a maior parte de ambas as dimensoes da imagem (MDF de fundo)
-                # ou que excedam o limite de área máxima (proporcional ou absoluto em pixels para testes)
-                if (w < 0.8 * mask.shape[1] or h < 0.8 * mask.shape[0]) and (area < config.MAX_CONTOUR_AREA_PROPORTION * total_pixels or area < 150000):
+                # ou que excedam o limite de área máxima
+                max_prop = 0.95 if getattr(config, 'HOLLOW_SPECIMEN', False) else config.MAX_CONTOUR_AREA_PROPORTION
+                if (w < 0.8 * mask.shape[1] or h < 0.8 * mask.shape[0]) and (area < max_prop * total_pixels or area < 150000):
                     valid_contours.append(c)
 
     # Calcular compacidade do maior contorno
@@ -630,37 +664,37 @@ def postprocess_mask(mask: np.ndarray) -> np.ndarray:
     
     # --- NOVO: Table Tail Remover ---
     # Remove "pontinhas" e reflexos finos que ficam grudados na mesa (linha inferior).
-    # Como a peça de argila é maciça, qualquer coisa que encosta na mesa E tem
-    # altura vertical muito pequena (ex: < 20 pixels) é garantidamente ruído da fita/mesa.
-    has_pixels = np.any(closed == 255, axis=0)
-    if np.any(has_pixels):
-        y_top = np.argmax(closed == 255, axis=0)
-        y_bottom = closed.shape[0] - 1 - np.argmax(closed[::-1, :] == 255, axis=0)
-        
-        valid_x = np.where(has_pixels)[0]
-        valid_y_bottom = y_bottom[valid_x]
-        
-        # O fundo da imagem pode estar levemente inclinado (câmera torta).
-        # Ajustamos uma reta robusta (np.polyfit) ao y_bottom para saber exatamente
-        # onde está a mesa para QUALQUER coluna x.
-        m, c = np.polyfit(valid_x, valid_y_bottom, 1)
-        
-        # Avaliar a linha da mesa teórica para todas as colunas
-        x_all = np.arange(closed.shape[1])
-        local_table_y = m * x_all + c
-        
-        # Condição 1: A coluna encosta na mesa local (tolerância generosa de 15px para irregularidades da fita)
-        touches_table = (local_table_y - y_bottom) <= 15
-        
-        # Condição 2: A coluna é muito fina (altura < 40 pixels, ~1mm)
-        # Reflexos fortes formam "bolhas" que podem ter até 30px de altura.
-        is_thin = (y_bottom - y_top) <= 40
-        
-        # Colunas que são apenas ruído na mesa
-        cols_to_erase = has_pixels & touches_table & is_thin
-        
-        # Apaga o ruído
-        closed[:, cols_to_erase] = 0
+    # Desativado para peças ocas (hollow) para evitar que o anel/arco fino seja apagado como se fosse ruído da mesa.
+    if not getattr(config, "HOLLOW_SPECIMEN", False):
+        has_pixels = np.any(closed == 255, axis=0)
+        if np.any(has_pixels):
+            y_top = np.argmax(closed == 255, axis=0)
+            y_bottom = closed.shape[0] - 1 - np.argmax(closed[::-1, :] == 255, axis=0)
+            
+            valid_x = np.where(has_pixels)[0]
+            valid_y_bottom = y_bottom[valid_x]
+            
+            # O fundo da imagem pode estar levemente inclinado (câmera torta).
+            # Ajustamos uma reta robusta (np.polyfit) ao y_bottom para saber exatamente
+            # onde está a mesa para QUALQUER coluna x.
+            m, c = np.polyfit(valid_x, valid_y_bottom, 1)
+            
+            # Avaliar a linha da mesa teórica para todas as colunas
+            x_all = np.arange(closed.shape[1])
+            local_table_y = m * x_all + c
+            
+            # Condição 1: A coluna encosta na mesa local (tolerância generosa de 15px para irregularidades da fita)
+            touches_table = (local_table_y - y_bottom) <= 15
+            
+            # Condição 2: A coluna é muito fina (altura < 40 pixels, ~1mm)
+            # Reflexos fortes formam "bolhas" que podem ter até 30px de altura.
+            is_thin = (y_bottom - y_top) <= 40
+            
+            # Colunas que são apenas ruído na mesa
+            cols_to_erase = has_pixels & touches_table & is_thin
+            
+            # Apaga o ruído
+            closed[:, cols_to_erase] = 0
     
     # Burr Shaver opcional
     if getattr(config, "BURR_SHAVER_ENABLED", False):
@@ -1385,7 +1419,8 @@ def segment(
     calibration_corners: np.ndarray = None,
     seed_points: list = None,
     mdf_points: list = None,
-    shadow_points: list = None
+    shadow_points: list = None,
+    hollow: bool = False
 ) -> list:
     """
     Segmenta o corpo de prova na imagem e extrai métricas geométricas.
@@ -1517,6 +1552,8 @@ def segment(
                 )
                 candidate_mask = check_and_correct_inversion(candidate_mask)
                 candidate_mask = postprocess_mask(candidate_mask)
+                if hollow:
+                    candidate_mask = fill_hollow_mask(candidate_mask)
                 quality = evaluate_mask_quality(candidate_mask)
 
                 logger.debug(
@@ -1527,6 +1564,35 @@ def segment(
                 )
 
                 if quality["is_good"]:
+                    # Verificar se pelo menos um contorno válido contém um seed point.
+                    # Sem esta verificação, uma máscara pode ter boa qualidade geral
+                    # mas não capturar a peça que o usuário marcou — gerando um dummy.
+                    if seed_points is not None and len(seed_points) > 0:
+                        cand_contours, _ = cv2.findContours(
+                            candidate_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                        )
+                        seed_found_in_contour = False
+                        
+                        min_area = getattr(config, 'MIN_CONTOUR_AREA_PX', 5000)
+                        if hollow:
+                            min_area = 500
+                            
+                        for c in cand_contours:
+                            if cv2.contourArea(c) < min_area:
+                                continue
+                            for sp in seed_points:
+                                if cv2.pointPolygonTest(c, (float(sp[0]), float(sp[1])), False) >= 0:
+                                    seed_found_in_contour = True
+                                    break
+                            if seed_found_in_contour:
+                                break
+                        if not seed_found_in_contour:
+                            logger.info(
+                                f"  ✗ Estratégia '{strat_name}' passou qualidade mas nenhum contorno "
+                                f"contém um seed point. Descartando."
+                            )
+                            continue
+
                     mask = candidate_mask
                     logger.info(f"  ✓ Estratégia selecionada: '{strat_name}'")
                     strategy = strat_name
@@ -1550,6 +1616,8 @@ def segment(
         )
         mask = check_and_correct_inversion(mask)
         mask = postprocess_mask(mask)
+        if hollow:
+            mask = fill_hollow_mask(mask)
 
     # A separação forçada foi removida pois o algoritmo Watershed já separa 
     # naturalmente as peças (colocando bordas de -1 entre bacias distintas). 
@@ -1576,7 +1644,9 @@ def segment(
         perimeter = cv2.arcLength(c, True)
         circularity = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
         
-        if circularity < 0.05 or aspect_ratio > 10.0 or (area >= config.MAX_CONTOUR_AREA_PROPORTION * total_pixels and area >= 150000):
+        max_prop = 0.95 if hollow else config.MAX_CONTOUR_AREA_PROPORTION
+        
+        if circularity < 0.05 or aspect_ratio > 10.0 or (area >= max_prop * total_pixels and area >= 150000):
             logger.info(
                 f"  Descartando contorno ruidoso/muito grande: área={area:.0f} px², "
                 f"bbox={w}x{h} px, circularidade={circularity:.3f}, aspect_ratio={aspect_ratio:.2f}"
@@ -1608,6 +1678,11 @@ def segment(
             logger.info("    [Refinamento Canny] Falha ou IoU muito baixo. Mantendo original.")
             refined_contours.append(c)
     valid_contours = refined_contours
+
+    # Se for uma peça oca/modo vaso, convertemos os contornos para convexHull para garantir o preenchimento da área
+    if hollow and len(valid_contours) > 0:
+        logger.info("  [Hollow] Convertendo contornos para Convex Hull como garantia de fechamento")
+        valid_contours = [cv2.convexHull(c) for c in valid_contours]
 
     # Filtrar contornos pelo seed_points: se disponível, reter apenas os que contêm sementes
     if seed_points is not None and len(seed_points) > 0:
@@ -1899,9 +1974,12 @@ def segment_watershed_seeded(
     h_orig, w_orig = image_color.shape[:2]
     
     # Downsampling para velocidade e suavização de ruído fino
+    # Para peças ocas (modo vaso), usamos uma resolução muito maior (ou total se ROI < 4000px)
+    # para evitar que a parede fina seja reduzida a poucos pixels e as sementes vazem.
+    local_max_dim = 4000 if getattr(config, "HOLLOW_SPECIMEN", False) else max_dim
     scale = 1.0
-    if max(h_orig, w_orig) > max_dim:
-        scale = max_dim / max(h_orig, w_orig)
+    if max(h_orig, w_orig) > local_max_dim:
+        scale = local_max_dim / max(h_orig, w_orig)
     
     if scale < 1.0:
         img_small = cv2.resize(image_color, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -1915,8 +1993,15 @@ def segment_watershed_seeded(
     img_small = cv2.bilateralFilter(img_small, 9, 75, 75)
     
     mps = [(int(p[0] * scale), int(p[1] * scale)) for p in mdf_points]
-    # Sementes redimensionadas
-    seed_radius = max(5, int(min(h_small, w_small) * 0.015))
+    
+    # Sementes redimensionadas: para peças ocas (paredes finas), a semente de foreground
+    # deve ser muito pequena (ex: raio 2) para não vazar da parede fina para o MDF de fundo.
+    if getattr(config, "HOLLOW_SPECIMEN", False):
+        fg_seed_radius = 2
+        bg_seed_radius = 5  # Muito pequeno também para evitar que cliques no MDF pertos do anel invadam a parede
+    else:
+        fg_seed_radius = max(5, int(min(h_small, w_small) * 0.015))
+        bg_seed_radius = fg_seed_radius * 2
     
     # Marcadores para o Watershed:
     # 0 = Desconhecido (onde o algoritmo vai decidir)
@@ -1928,15 +2013,22 @@ def segment_watershed_seeded(
     # Marcar foreground (IDs únicos) nos pontos das peças
     for i, sp in enumerate(seed_points):
         s_pt = (int(sp[0] * scale), int(sp[1] * scale))
-        cv2.circle(markers, s_pt, seed_radius, i + 1, -1)
+        cv2.circle(markers, s_pt, fg_seed_radius, i + 1, -1)
     
     # Marcar background no ponto do MDF
     for mp in mps:
-        cv2.circle(markers, mp, seed_radius * 2, bg_marker, -1)
+        cv2.circle(markers, mp, bg_seed_radius, bg_marker, -1)
     
     # Marcar bordas da imagem como background garantido
-    border_w = max(5, int(w_small * 0.02))
-    border_h = max(5, int(h_small * 0.02))
+    # Se for peça oca (modo vaso), usamos apenas uma borda fina de 2 pixels
+    # para evitar que a semente ou a parede da peça sejam 'comidas' pela borda do background se a ROI for estreita.
+    if getattr(config, "HOLLOW_SPECIMEN", False):
+        border_w = 2
+        border_h = 2
+    else:
+        border_w = max(5, int(w_small * 0.02))
+        border_h = max(5, int(h_small * 0.02))
+        
     markers[:border_h, :] = bg_marker
     markers[-border_h:, :] = bg_marker
     markers[:, :border_w] = bg_marker
@@ -2076,7 +2168,8 @@ def segment_shadow_band(
     mask[mask_piece | mask_shadow] = 255
     
     # 1. Abertura morfológica para eliminar ruídos isolados (pequenos pontos no MDF)
-    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    open_size = 3 if getattr(config, "HOLLOW_SPECIMEN", False) else 5
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size))
     mask_opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open)
     
     # 2. Fechamento morfológico para conectar a peça e a sombra (usando kernel 45x45 para evitar reentrâncias nas pontas)

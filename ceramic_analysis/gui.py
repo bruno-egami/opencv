@@ -136,6 +136,10 @@ class CeramicAnalysisGUI(ctk.CTk):
         self.chk_burr = ctk.CTkCheckBox(self.burr_frame, text="Ativar Burr Shaver (Arredondar Quinas)", variable=self.var_burr_enabled, command=self.toggle_burr_size)
         self.chk_burr.pack(side="left", padx=(0, 20))
         
+        self.var_hollow_enabled = ctk.BooleanVar(value=False)
+        self.chk_hollow = ctk.CTkCheckBox(self.burr_frame, text="Peça Oca / Modo Vaso", variable=self.var_hollow_enabled)
+        self.chk_hollow.pack(side="left", padx=(0, 20))
+        
         self.lbl_burr_size = ctk.CTkLabel(self.burr_frame, text="Tamanho Kernel:")
         self.lbl_burr_size.pack(side="left", padx=(0, 5))
         
@@ -175,6 +179,12 @@ class CeramicAnalysisGUI(ctk.CTk):
             size = self.entry_burr_size.get().strip()
             if size.isdigit():
                 args.extend(["--burr-size", size])
+        return args
+
+    def get_hollow_args(self):
+        args = []
+        if self.var_hollow_enabled.get():
+            args.append("--hollow")
         return args
 
     def change_appearance_mode_event(self, new_appearance_mode: str):
@@ -324,6 +334,7 @@ class CeramicAnalysisGUI(ctk.CTk):
             material = self.combo_material.get()
             args = ["process", "--session", session, "--view", view, "--state", state, "--material", material]
             args.extend(self.get_burr_args())
+            args.extend(self.get_hollow_args())
             self.run_command_in_thread(args)
 
     def cmd_analyze(self):
@@ -332,6 +343,7 @@ class CeramicAnalysisGUI(ctk.CTk):
             material = self.combo_material.get()
             args = ["analyze", "--session", session, "--material", material]
             args.extend(self.get_burr_args())
+            args.extend(self.get_hollow_args())
             self.run_command_in_thread(args)
 
     def cmd_cad_compare(self):
@@ -357,6 +369,7 @@ class CeramicAnalysisGUI(ctk.CTk):
             "--material", material
         ]
         args.extend(self.get_burr_args())
+        args.extend(self.get_hollow_args())
         self.run_command_in_thread(args)
 
     def cmd_report(self):
@@ -386,6 +399,7 @@ class CeramicAnalysisGUI(ctk.CTk):
             cmd_args.extend(["--cad", cad_path])
             
         cmd_args.extend(self.get_burr_args())
+        cmd_args.extend(self.get_hollow_args())
         self.run_command_in_thread(cmd_args)
 
 if __name__ == "__main__":

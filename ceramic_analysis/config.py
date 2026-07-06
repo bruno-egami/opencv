@@ -125,6 +125,9 @@ MIN_CONTOUR_AREA_PX = 5000
 # Contornos individuais que cobrem mais de 10% da área da imagem são descartados (ex: MDF de fundo)
 MAX_CONTOUR_AREA_PROPORTION = 0.10
 
+# Ativar suporte a peças ocas (modo vaso) por padrão
+HOLLOW_SPECIMEN = False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CAMINHOS (relativos à raiz do projeto ceramic_analysis/)

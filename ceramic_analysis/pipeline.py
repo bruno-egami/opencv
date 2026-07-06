@@ -500,7 +500,11 @@ def cmd_process(args):
                         session_masks_dir = Path(config.OUTPUT_DIR) / args.session / "masks" / state / view
                         session_masks_dir.mkdir(parents=True, exist_ok=True)
     
-                        # 3. Segmentação (executa na imagem recortada/local)
+                        hollow_arg = getattr(args, "hollow", False) or getattr(config, "HOLLOW_SPECIMEN", False)
+                        # Hollow reconstruction (Convex Hull for rings) is physically only applicable to the top view.
+                        if view != "top":
+                            hollow_arg = False
+                            
                         seg_results = segmentation.segment(
                             gray, color, img_path.stem,
                             background=background_roi,
@@ -509,7 +513,8 @@ def cmd_process(args):
                             masks_dir=str(session_masks_dir),
                             calibration_corners=corners_local,
                             seed_points=seed_points_local if has_roi else seed_points,
-                            mdf_points=mdf_points_local if has_roi else mdf_points
+                            mdf_points=mdf_points_local if has_roi else mdf_points,
+                            hollow=hollow_arg
                         )
     
                         # Ordenar contornos pela posição X (esquerda para a direita) apenas se não houver sementes
@@ -1182,6 +1187,7 @@ Exemplos:
     p_proc.add_argument("--burr-shaver", action="store_true", help="Habilita Burr Shaver (arredondamento morfológico para rebarbas)")
     p_proc.add_argument("--burr-size", type=int, default=201, help="Tamanho do kernel do Burr Shaver (default 201)")
     p_proc.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila", help="Tipo de material (guiar a segmentação)")
+    p_proc.add_argument("--hollow", action="store_true", help="Habilita suporte para peças ocas ou impressas em modo vaso")
 
     # analyze
     p_analyze = subparsers.add_parser("analyze", help="Compara úmido vs seco e calcula retração")
@@ -1195,6 +1201,7 @@ Exemplos:
     p_analyze.add_argument("--burr-shaver", action="store_true")
     p_analyze.add_argument("--burr-size", type=int, default=201)
     p_analyze.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila")
+    p_analyze.add_argument("--hollow", action="store_true")
 
     # full
     p_full = subparsers.add_parser("full", help="Pipeline completo")
@@ -1211,6 +1218,7 @@ Exemplos:
     p_full.add_argument("--burr-shaver", action="store_true")
     p_full.add_argument("--burr-size", type=int, default=201)
     p_full.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila")
+    p_full.add_argument("--hollow", action="store_true")
     p_full.add_argument("--cad", default=None, help="Caminho para o modelo CAD (.stl/.step/.stp) para comparacao")
     p_full.add_argument(
         "--view-cad", nargs="+", dest="view_cad",
@@ -1244,6 +1252,7 @@ Exemplos:
     p_cad.add_argument("--burr-shaver", action="store_true")
     p_cad.add_argument("--burr-size", type=int, default=201)
     p_cad.add_argument("--material", choices=["Argila", "Termoplástico"], default="Argila")
+    p_cad.add_argument("--hollow", action="store_true")
 
     # report
     p_rep = subparsers.add_parser("report", help="Gera relatório HTML da sessão")
@@ -1268,6 +1277,9 @@ def main():
         
     if hasattr(args, "material") and args.material:
         config.MATERIAL_TYPE = args.material
+        
+    if hasattr(args, "hollow") and args.hollow:
+        config.HOLLOW_SPECIMEN = True
 
     setup_logging(args.verbose)
 
