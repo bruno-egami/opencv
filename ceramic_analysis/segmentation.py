@@ -417,8 +417,8 @@ def segment_grabcut_seeded(
     gc_mask[:, :border_x] = cv2.GC_BGD            # Esquerda
     gc_mask[:, w_small - border_x:] = cv2.GC_BGD  # Direita
     
-    # Raio para as sementes
-    seed_radius = max(8, int(min(h_small, w_small) * 0.02))
+    # Raio para as sementes (reduzido de ~10px para 3px para evitar vazamentos nas bordas)
+    seed_radius = 3
     fgd_radius = max(seed_radius * 5, int(min(h_small, w_small) * 0.12))
     
     for sp in sps:
@@ -613,7 +613,25 @@ def evaluate_mask_quality(mask: np.ndarray) -> dict:
                 # Rejeitar contornos que cobrem a maior parte de ambas as dimensoes da imagem (MDF de fundo)
                 # ou que excedam o limite de área máxima
                 max_prop = 0.95 if getattr(config, 'HOLLOW_SPECIMEN', False) else config.MAX_CONTOUR_AREA_PROPORTION
-                if (w < 0.8 * mask.shape[1] or h < 0.8 * mask.shape[0]) and (area < max_prop * total_pixels or area < 150000):
+                
+                # Tentar carregar resolução da calibração para normalizar os limites de área
+                full_image_area = total_pixels
+                try:
+                    import os
+                    if os.path.exists(config.CALIBRATION_FILE):
+                        fs = cv2.FileStorage(config.CALIBRATION_FILE, cv2.FILE_STORAGE_READ)
+                        w_node = fs.getNode("image_width")
+                        h_node = fs.getNode("image_height")
+                        if not w_node.empty() and not h_node.empty():
+                            full_image_area = int(w_node.real()) * int(h_node.real())
+                        fs.release()
+                except Exception:
+                    pass
+
+                resolution_factor = max(1.0, full_image_area / 10000000.0)
+                max_area_const = 150000 * resolution_factor
+
+                if (w < 0.8 * mask.shape[1] or h < 0.8 * mask.shape[0]) and (area < max_prop * full_image_area or area < max_area_const):
                     valid_contours.append(c)
 
     # Calcular compacidade do maior contorno
@@ -1646,7 +1664,24 @@ def segment(
         
         max_prop = 0.95 if hollow else config.MAX_CONTOUR_AREA_PROPORTION
         
-        if circularity < 0.05 or aspect_ratio > 10.0 or (area >= max_prop * total_pixels and area >= 150000):
+        # Tentar carregar resolução da calibração para normalizar os limites de área
+        full_image_area = total_pixels
+        try:
+            import os
+            if os.path.exists(config.CALIBRATION_FILE):
+                fs = cv2.FileStorage(config.CALIBRATION_FILE, cv2.FILE_STORAGE_READ)
+                w_node = fs.getNode("image_width")
+                h_node = fs.getNode("image_height")
+                if not w_node.empty() and not h_node.empty():
+                    full_image_area = int(w_node.real()) * int(h_node.real())
+                fs.release()
+        except Exception:
+            pass
+
+        resolution_factor = max(1.0, full_image_area / 10000000.0)
+        max_area_const = 150000 * resolution_factor
+        
+        if circularity < 0.05 or aspect_ratio > 10.0 or (area >= max_prop * full_image_area and area >= max_area_const):
             logger.info(
                 f"  Descartando contorno ruidoso/muito grande: área={area:.0f} px², "
                 f"bbox={w}x{h} px, circularidade={circularity:.3f}, aspect_ratio={aspect_ratio:.2f}"
@@ -2000,8 +2035,9 @@ def segment_watershed_seeded(
         fg_seed_radius = 2
         bg_seed_radius = 5  # Muito pequeno também para evitar que cliques no MDF pertos do anel invadam a parede
     else:
-        fg_seed_radius = max(5, int(min(h_small, w_small) * 0.015))
-        bg_seed_radius = fg_seed_radius * 2
+        # Reduzido de min * 0.015 (~10px) para 3px para evitar vazamentos ao clicar perto das bordas.
+        fg_seed_radius = 3
+        bg_seed_radius = 6
     
     # Marcadores para o Watershed:
     # 0 = Desconhecido (onde o algoritmo vai decidir)

@@ -515,7 +515,7 @@ class InteractiveSeedPointCollector:
             
             if self.current_step == 0:
                 n_pecas = len(self.piece_points)
-                step_text = f">>> PASSO 1/2: Clique nas pecas ceramicas ({n_pecas} marcada{'s' if n_pecas != 1 else ''}). [Enter] para avancar <<<"
+                step_text = f">>> PASSO 1/2: Clique no CENTRO das pecas ({n_pecas} marcada{'s' if n_pecas != 1 else ''}). Evite bordas/brilhos. [Enter] p/ avancar <<<"
                 step_color = (100, 255, 100)
             elif self.current_step == 1:
                 n_fundo = len(self.mdf_points)

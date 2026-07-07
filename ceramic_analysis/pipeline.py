@@ -505,17 +505,26 @@ def cmd_process(args):
                         if view != "top":
                             hollow_arg = False
                             
-                        seg_results = segmentation.segment(
-                            gray, color, img_path.stem,
-                            background=background_roi,
-                            strategy=args.strategy,
-                            save_mask=False,  # Salvar máscara global no pipeline
-                            masks_dir=str(session_masks_dir),
-                            calibration_corners=corners_local,
-                            seed_points=seed_points_local if has_roi else seed_points,
-                            mdf_points=mdf_points_local if has_roi else mdf_points,
-                            hollow=hollow_arg
-                        )
+                        try:
+                            seg_results = segmentation.segment(
+                                gray, color, img_path.stem,
+                                background=background_roi,
+                                strategy=args.strategy,
+                                save_mask=False,  # Salvar máscara global no pipeline
+                                masks_dir=str(session_masks_dir),
+                                calibration_corners=corners_local,
+                                seed_points=seed_points_local if has_roi else seed_points,
+                                mdf_points=mdf_points_local if has_roi else mdf_points,
+                                hollow=hollow_arg
+                            )
+                        except (segmentation.SegmentationError, Exception) as e:
+                            if getattr(config, "INTERACTIVE_CALIBRATION", True) and not is_testing and len(seed_points_local) > 0:
+                                logger.warning(f"  ✗ Falha na segmentação com as sementes atuais: {e}")
+                                logger.info("  [Seed] Solicitando nova seleção de sementes devido à falha...")
+                                retry_seeds = True
+                                continue
+                            else:
+                                raise e
     
                         # Ordenar contornos pela posição X (esquerda para a direita) apenas se não houver sementes
                         if not seed_points or len(seed_points) == 0:
