@@ -39,7 +39,85 @@ def _format_stat(mean, std, n, unit="mm"):
     else:
         return f"0.00 {unit}" if unit else "0.00"
 
-def generate_profile_plot(measurements_list, output_path, title, y_label, prefix="cross_width_"):
+
+def format_cad_details_html(cad_c, view):
+    """Gera um bloco de texto HTML completo com todas as estatísticas de desvio do CAD."""
+    try:
+        tolerance_mm = config.TOLERANCE_LIMIT
+    except AttributeError:
+        tolerance_mm = 1.00
+        
+    mean_dev = float(cad_c.get("mean_deviation_mm", 0))
+    dev_std = float(cad_c.get("deviation_std_mm", 0))
+    hausdorff = float(cad_c.get("hausdorff_mm", 0))
+    iou = float(cad_c.get("iou", 0)) * 100
+    complexity = float(cad_c.get("shape_complexity", 0))
+    
+    html = f"""
+    <div style="padding: 1.2rem; border-top: 1px solid var(--border-color); font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6; background: rgba(0,0,0,0.15);">
+        <span style="color: {'#60a5fa' if view == 'top' else '#34d399'}; font-weight: 600; display: block; margin-bottom: 0.75rem; font-family: 'Outfit', sans-serif; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 0.05em;">Dados de Desvio do Modelo CAD ({'Vista Superior' if view == 'top' else 'Vista Lateral'})</span>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5rem 1.5rem; margin-bottom: 0.75rem;">
+            <div>• Desvio Médio Local: <strong style="color: #f8fafc;">{mean_dev:.3f} mm</strong> (std: {dev_std:.3f} mm)</div>
+            <div>• Desvio Máx (Hausdorff): <strong style="color: #f8fafc;">{hausdorff:.3f} mm</strong></div>
+            <div>• Tolerância Limite: <strong style="color: #f8fafc;">{tolerance_mm:.2f} mm</strong></div>
+            <div>• Coincidência (IoU): <strong style="color: #34d399;">{iou:.1f}%</strong></div>
+            <div>• Complexidade da Forma: <strong style="color: #f8fafc;">{complexity:.2f}</strong></div>
+        </div>
+        <div style="border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 0.75rem; margin-top: 0.5rem; font-size: 0.85rem; line-height: 1.5;">
+    """
+    
+    # Se houver diâmetro
+    if "diameter_photo_mm" in cad_c and cad_c.get("diameter_photo_mm") != "":
+        dia_cad = float(cad_c.get("diameter_cad_mm", 0))
+        dia_photo = float(cad_c.get("diameter_photo_mm", 0))
+        dia_dev = float(cad_c.get("diameter_deviation_mm", 0))
+        dia_dev_pct = float(cad_c.get("diameter_deviation_pct", 0))
+        concentricity = float(cad_c.get("concentricity_mm", 0))
+        
+        html += f"""
+            • Diâmetro (Real vs CAD): <strong style="color: #f8fafc;">{dia_photo:.2f} / {dia_cad:.2f} mm</strong> (Desvio: {dia_dev:+.3f} mm, {dia_dev_pct:+.2f}%)<br>
+            • Concentricidade: <strong style="color: #f8fafc;">{concentricity:.3f} mm</strong><br>
+        """
+    else:
+        w_label = "Largura (X)"
+        h_label = "Profundidade (Y)" if view == "top" else "Altura (Z)"
+        
+        cad_w = float(cad_c.get('cad_bbox_w_mm', 0.0) or 0.0)
+        cad_h = float(cad_c.get('cad_bbox_h_mm', 0.0) or 0.0)
+        meas_w = float(cad_c.get('measured_bbox_w_mm', 0.0) or 0.0)
+        meas_h = float(cad_c.get('measured_bbox_h_mm', 0.0) or 0.0)
+        
+        dev_w = float(cad_c.get('bbox_w_deviation_mm', 0.0) or 0.0)
+        dev_w_pct = float(cad_c.get('bbox_w_deviation_pct', 0.0) or 0.0)
+        dev_h = float(cad_c.get('bbox_h_deviation_mm', 0.0) or 0.0)
+        dev_h_pct = float(cad_c.get('bbox_h_deviation_pct', 0.0) or 0.0)
+        
+        cad_area = float(cad_c.get('cad_area_mm2', 0.0) or 0.0)
+        meas_area = float(cad_c.get('measured_area_mm2', 0.0) or 0.0)
+        dev_area_pct = float(cad_c.get('area_deviation_pct', 0.0) or 0.0)
+        
+        html += f"""
+            • {w_label}: CAD: <strong>{cad_w:.2f} mm</strong> | Real: <strong>{meas_w:.2f} mm</strong> | Desvio: <strong style="color: {'#10b981' if dev_w >= 0 else '#ef4444'};">{dev_w:+.2f} mm</strong> ({dev_w_pct:+.1f}%)<br>
+            • {h_label}: CAD: <strong>{cad_h:.2f} mm</strong> | Real: <strong>{meas_h:.2f} mm</strong> | Desvio: <strong style="color: {'#10b981' if dev_h >= 0 else '#ef4444'};">{dev_h:+.2f} mm</strong> ({dev_h_pct:+.1f}%)<br>
+            • Área Projetada: CAD: <strong>{cad_area:.1f} mm²</strong> | Real: <strong>{meas_area:.1f} mm²</strong> | Desvio: <strong style="color: {'#10b981' if dev_area_pct >= 0 else '#ef4444'};">{dev_area_pct:+.1f}%</strong><br>
+        """
+        
+    if "n_holes_photo" in cad_c and cad_c.get("n_holes_photo") != "" and int(cad_c.get("n_holes_cad", 0) or 0) > 0:
+        n_holes_photo = int(cad_c.get("n_holes_photo", 0) or 0)
+        n_holes_cad = int(cad_c.get("n_holes_cad", 0) or 0)
+        holes_iou = float(cad_c.get("holes_iou", 0.0) or 0.0)
+        html += f"""
+            • Furos (Foto vs CAD): <strong style="color: #f8fafc;">{n_holes_photo} / {n_holes_cad}</strong> (IoU Furos: {holes_iou:.3f})<br>
+        """
+        
+    html += """
+        </div>
+    </div>
+    """
+    return html
+
+
+def generate_profile_plot(measurements_list, output_path, title, y_label, prefix="cross_width_", nominal_value=None):
     plt.figure(figsize=(10, 5))
     plt.style.use('dark_background')
     ax = plt.gca()
@@ -75,6 +153,10 @@ def generate_profile_plot(measurements_list, output_path, title, y_label, prefix
         plt.close()
         return None
         
+    # Desenhar linha nominal de referência do CAD
+    if nominal_value is not None and nominal_value > 0:
+        plt.axhline(y=nominal_value, color='#ef4444', linestyle='--', linewidth=2, label=f"Nominal CAD ({nominal_value:.2f} mm)")
+
     plt.title(title, color='#f8fafc', pad=15)
     plt.xlabel('Posição ao longo da peça (%)', color='#94a3b8')
     plt.ylabel(y_label, color='#94a3b8')
@@ -863,9 +945,9 @@ def generate_report(session_id: str, open_browser: bool = False):
                 <td>{dev_str}</td>
             </tr>"""
 
-    for pct in [10, 50, 90]:
+    for pct in [20, 50, 90]:
         cross_keys.append((f"Largura a {pct}%", f"cross_width_{pct}pct_mm"))
-    for pct in [10, 50, 90]:
+    for pct in [20, 50, 90]:
         cross_keys.append((f"Comprimento a {pct}%", f"cross_length_{pct}pct_mm"))
 
     has_cross = any(top_meas.get(k, 0) for _, k in cross_keys) if top_meas else False
@@ -875,13 +957,27 @@ def generate_report(session_id: str, open_browser: bool = False):
             if mean_val > 0:
                 val_str = _format_stat(mean_val, std_val, n_cross, "mm")
                 if has_cad:
+                    cad_key = f"cad_{key}"
+                    cad_val_str = top_cad.get(cad_key, "")
+                    cad_val = float(cad_val_str) if cad_val_str and cad_val_str != "" else 0.0
+                    
+                    if cad_val > 0:
+                        dev = mean_val - cad_val
+                        dev_pct = (dev / cad_val) * 100
+                        color_dev = get_color(dev)
+                        cad_cell = f"{cad_val:.2f} mm"
+                        dev_cell = f'<strong style="color: {color_dev};">{dev:+.2f} mm</strong> ({dev_pct:+.1f}%)'
+                    else:
+                        cad_cell = "—"
+                        dev_cell = "—"
+                        
                     cross_section_rows_html += f"""
                         <tr>
                             <td><span class="badge-metric badge-blue">Superior (Top)</span></td>
                             <td>{label}</td>
                             <td>{val_str}</td>
-                            <td>—</td>
-                            <td>—</td>
+                            <td>{cad_cell}</td>
+                            <td>{dev_cell}</td>
                         </tr>"""
                 else:
                     cross_section_rows_html += f"""
@@ -899,13 +995,27 @@ def generate_report(session_id: str, open_browser: bool = False):
             if mean_val > 0:
                 val_str = _format_stat(mean_val, std_val, n_cross, "mm")
                 if has_cad:
+                    cad_key = f"cad_{key}"
+                    cad_val_str = front_cad.get(cad_key, "")
+                    cad_val = float(cad_val_str) if cad_val_str and cad_val_str != "" else 0.0
+                    
+                    if cad_val > 0:
+                        dev = mean_val - cad_val
+                        dev_pct = (dev / cad_val) * 100
+                        color_dev = get_color(dev)
+                        cad_cell = f"{cad_val:.2f} mm"
+                        dev_cell = f'<strong style="color: {color_dev};">{dev:+.2f} mm</strong> ({dev_pct:+.1f}%)'
+                    else:
+                        cad_cell = "—"
+                        dev_cell = "—"
+                        
                     cross_section_rows_html += f"""
                         <tr>
                             <td><span class="badge-metric badge-green">Lateral (Side)</span></td>
                             <td>{side_label}</td>
                             <td>{val_str}</td>
-                            <td>—</td>
-                            <td>—</td>
+                            <td>{cad_cell}</td>
+                            <td>{dev_cell}</td>
                         </tr>"""
                 else:
                     cross_section_rows_html += f"""
@@ -914,9 +1024,9 @@ def generate_report(session_id: str, open_browser: bool = False):
                             <td>{side_label}</td>
                             <td>{val_str}</td>
                         </tr>"""
-
+ 
     # (Color definitions moved up)
-
+ 
     # Imagens (Caminhos relativos para o HTML carregar localmente)
     annotated_top_cards_html = ""
     unique_top_sources = list(dict.fromkeys(m.get("source_file", "") for m in top_meas_list if m.get("source_file", "")))
@@ -925,7 +1035,7 @@ def generate_report(session_id: str, open_browser: bool = False):
         img_path = f"annotated/top/{state_top}/{stem}_annotated.png"
         annotated_top_cards_html += f"""
                     <div class="img-card">
-                        <h3>Imagem Anotada ({stem})</h3>
+                        <h3>Imagem Anotada ({session_id})</h3>
                         <div class="img-container">
                             <img src="{img_path}" alt="Vista Superior Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
                         </div>
@@ -938,7 +1048,7 @@ def generate_report(session_id: str, open_browser: bool = False):
         img_path = f"annotated/side/{state_side}/{stem}_annotated.png"
         annotated_side_cards_html += f"""
                     <div class="img-card">
-                        <h3>Imagem Anotada ({stem})</h3>
+                        <h3>Imagem Anotada ({session_id})</h3>
                         <div class="img-container">
                             <img src="{img_path}" alt="Vista Lateral Anotada" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Imagem+N%C3%A3o+Encontrada'">
                         </div>
@@ -948,24 +1058,28 @@ def generate_report(session_id: str, open_browser: bool = False):
     for cad_c in top_cad_list:
         sid = cad_c.get("sample_id", "")
         dev_map = f"cad_comparison/{sid}_{state_top}_top_deviation.png"
+        details_panel = format_cad_details_html(cad_c, "top")
         deviation_top_cards_html += f"""
                     <div class="img-card">
                         <h3>Mapa de Calor de Desvios ({sid})</h3>
                         <div class="img-container">
                             <img src="{dev_map}" alt="Mapa CAD" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Mapa+CAD+N%C3%A3o+Encontrado'">
                         </div>
+                        {details_panel}
                     </div>"""
 
     deviation_side_cards_html = ""
     for cad_c in front_cad_list:
         sid = cad_c.get("sample_id", "")
         dev_map = f"cad_comparison/{sid}_{state_side}_front_deviation.png"
+        details_panel = format_cad_details_html(cad_c, "front")
         deviation_side_cards_html += f"""
                     <div class="img-card">
                         <h3>Mapa de Calor de Desvios Frontal ({sid})</h3>
                         <div class="img-container">
                             <img src="{dev_map}" alt="Mapa CAD" onerror="this.src='https://placehold.co/600x450/1e293b/f8fafc?text=Mapa+CAD+N%C3%A3o+Encontrado'">
                         </div>
+                        {details_panel}
                     </div>"""
                     
     # --- Gerar Gráficos de Perfil ---
@@ -975,10 +1089,10 @@ def generate_report(session_id: str, open_browser: bool = False):
     profile_top_html = ""
     if top_meas_list:
         plot_top_path = output_session_dir / f"profile_top_{session_id}.png"
-        res_top = generate_profile_plot(top_meas_list, str(plot_top_path), "Perfil de Variação de Largura (Vista Superior)", "Largura (mm)", prefix="cross_width_")
+        res_top = generate_profile_plot(top_meas_list, str(plot_top_path), "Perfil de Variação de Largura (Vista Superior)", "Largura (mm)", prefix="cross_width_", nominal_value=nominal_width)
         
         plot_top_len_path = output_session_dir / f"profile_top_len_{session_id}.png"
-        res_top_len = generate_profile_plot(top_meas_list, str(plot_top_len_path), "Perfil de Variação de Comprimento (Vista Superior)", "Comprimento (mm)", prefix="cross_length_")
+        res_top_len = generate_profile_plot(top_meas_list, str(plot_top_len_path), "Perfil de Variação de Comprimento (Vista Superior)", "Comprimento (mm)", prefix="cross_length_", nominal_value=nominal_len)
         
         if res_top:
             profile_top_html += f"""
@@ -1002,10 +1116,10 @@ def generate_report(session_id: str, open_browser: bool = False):
     profile_side_html = ""
     if side_meas_list:
         plot_side_path = output_session_dir / f"profile_side_{session_id}.png"
-        res_side = generate_profile_plot(side_meas_list, str(plot_side_path), "Perfil de Variação de Espessura (Vista Lateral)", "Espessura (mm)", prefix="cross_width_")
+        res_side = generate_profile_plot(side_meas_list, str(plot_side_path), "Perfil de Variação de Espessura (Vista Lateral)", "Espessura (mm)", prefix="cross_width_", nominal_value=nominal_thick)
         
         plot_side_len_path = output_session_dir / f"profile_side_len_{session_id}.png"
-        res_side_len = generate_profile_plot(side_meas_list, str(plot_side_len_path), "Perfil de Variação de Comprimento/Largura (Vista Lateral)", "Dimensão (mm)", prefix="cross_length_")
+        res_side_len = generate_profile_plot(side_meas_list, str(plot_side_len_path), "Perfil de Variação de Comprimento/Largura (Vista Lateral)", "Dimensão (mm)", prefix="cross_length_", nominal_value=nominal_side_w)
         
         if res_side:
             profile_side_html += f"""

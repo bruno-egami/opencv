@@ -603,28 +603,50 @@ def cmd_process(args):
                     for metrics_px in seg_results:
                         metrics_mm = metrology.convert_measurements(metrics_px, scale)
                         
-                        # Se houver múltiplos contornos, adicionar sufixo (1-indexed)
+                        # Usar o nome da sessão como base para a identificação da peça
+                        session_name = args.session
                         if len(seg_results) > 1:
-                            metrics_mm["sample_id"] = f"{sample_id}_P{metrics_px['contour_index'] + 1}"
+                            metrics_mm["sample_id"] = f"{session_name}_P{metrics_px['contour_index'] + 1}"
                         else:
-                            metrics_mm["sample_id"] = sample_id
+                            metrics_mm["sample_id"] = session_name
                             
                         metrics_mm["session"] = args.session
                         metrics_mm["state"] = state
                         metrics_mm["view_mode"] = view
                         metrics_mm["source_file"] = img_path.name
+                        
+                        # Salvar coordenadas da ROI nas medições para uso posterior
+                        metrics_mm["roi_x"] = x_roi
+                        metrics_mm["roi_y"] = y_roi
+                        metrics_mm["roi_w"] = w_roi
+                        metrics_mm["roi_h"] = h_roi
 
                         all_results.append(metrics_mm)
                         all_metrics_mm.append(metrics_mm)
 
-                    # 4. Anotar imagem com TODAS as peças na mesma imagem final
+                    # 4. Anotar imagem com TODAS as peças na mesma imagem final (croppada se houver ROI)
                     if not args.no_annotate and len(all_metrics_mm) > 0:
                         ann_dir = Path(config.OUTPUT_DIR) / args.session / "annotated" / view / state
                         ann_path = ann_dir / f"{img_path.stem}_annotated.png"
-                        # Desabilitar dim_background nas chamadas individuais, exceto se refatorarmos annotate_image.
-                        # Para evitar escurecer N vezes, enviamos a lista completa para uma nova função
+                        
+                        if has_roi and w_roi > 0 and h_roi > 0:
+                            color_to_annotate = color_full[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
+                            all_metrics_cropped = []
+                            for original_m in all_metrics_mm:
+                                m_copy = dict(original_m)
+                                if "contour" in m_copy and m_copy["contour"] is not None:
+                                    m_copy["contour"] = m_copy["contour"] - [x_roi, y_roi]
+                                if "bbox_x" in m_copy:
+                                    m_copy["bbox_x"] = m_copy["bbox_x"] - x_roi
+                                if "bbox_y" in m_copy:
+                                    m_copy["bbox_y"] = m_copy["bbox_y"] - y_roi
+                                all_metrics_cropped.append(m_copy)
+                        else:
+                            color_to_annotate = color_full
+                            all_metrics_cropped = all_metrics_mm
+
                         analysis.annotate_image_multiple(
-                            color_full, all_metrics_mm, str(ann_path),
+                            color_to_annotate, all_metrics_cropped, str(ann_path),
                             scale=scale
                         )
 
@@ -960,6 +982,14 @@ def cmd_cad_compare(args, precomputed_measurements=None):
                 transform=transform
             )
 
+            # Calcular perfis do contorno CAD em mm
+            try:
+                cad_profiles = cad_compare.calculate_contour_profiles(cad_aligned_mm)
+                for k, v in cad_profiles.items():
+                    metrics[f"cad_{k}"] = v
+            except Exception as profile_err:
+                logger.warning(f"Erro ao calcular perfis do contorno CAD: {profile_err}")
+
             # Converter contornos alinhados de volta para pixel para desenho
             cad_contour_px = np.zeros_like(cad_aligned_mm)
             cad_contour_px[:, 0] = cad_aligned_mm[:, 0] * px_h
@@ -974,17 +1004,34 @@ def cmd_cad_compare(args, precomputed_measurements=None):
                     hole_px[:, 1] = hole_aligned_mm[:, 1] * px_v
                     cad_holes_px.append(hole_px)
 
-            # Salvar imagem de desvio
+            # Salvar imagem de desvio (croppada se houver ROI)
             out_dir = Path(config.OUTPUT_DIR) / args.session / "cad_comparison"
             out_path = out_dir / f"{sample_id}_{state}_{view}_deviation.png"
+            
+            rx = int(m.get("roi_x", 0))
+            ry = int(m.get("roi_y", 0))
+            rw = int(m.get("roi_w", 0))
+            rh = int(m.get("roi_h", 0))
+            
+            if rw > 0 and rh > 0:
+                photo_image_cropped = photo_image[ry:ry+rh, rx:rx+rw]
+                photo_contour_px_cropped = photo_contour_px - [rx, ry]
+                cad_contour_px_cropped = cad_contour_px - [rx, ry]
+                cad_holes_px_cropped = [h - [rx, ry] for h in cad_holes_px]
+            else:
+                photo_image_cropped = photo_image
+                photo_contour_px_cropped = photo_contour_px
+                cad_contour_px_cropped = cad_contour_px
+                cad_holes_px_cropped = cad_holes_px
+
             cad_compare.generate_deviation_map(
-                photo_image, cad_contour_px, photo_contour_px,
+                photo_image_cropped, cad_contour_px_cropped, photo_contour_px_cropped,
                 metrics["per_point_distances_mm"],
                 str(out_path),
                 px_per_mm_h=px_h,
                 px_per_mm_v=px_v,
                 tolerance_mm=tolerance_mm,
-                cad_holes_px=cad_holes_px,
+                cad_holes_px=cad_holes_px_cropped,
                 metrics=metrics,
                 view=view
             )
@@ -1037,6 +1084,12 @@ def cmd_cad_compare(args, precomputed_measurements=None):
                 "holes_matched": 1 if metrics["holes_matched"] else 0,
                 "holes_iou": metrics.get("holes_iou", metrics["iou"])
             })
+
+            # Adicionar seções transversais ao CSV de comparação CAD
+            for pct in range(0, 101, 5):
+                for prefix in ["width", "length"]:
+                    cad_key = f"cad_cross_{prefix}_{pct}pct_mm"
+                    res_dict[cad_key] = metrics.get(cad_key, 0.0)
 
             all_results.append(res_dict)
 

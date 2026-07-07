@@ -409,9 +409,10 @@ def annotate_image(
 
     font_scale = max(0.5, min(w, h) / 1500.0)
     thickness = max(1, int(font_scale * 2))
+    contour_thickness = max(6, int(font_scale * 3.5))
 
     if draw_contour and "contour" in metrics:
-        cv2.drawContours(annotated, [metrics["contour"]], -1, COLOR_CONTOUR, 2)
+        cv2.drawContours(annotated, [metrics["contour"]], -1, COLOR_CONTOUR, contour_thickness)
         
     # Identificacao da peca
     if "sample_id" in metrics:
@@ -595,7 +596,7 @@ def _draw_segment_cota(
     text_angle = 90 if abs(u[0]) > abs(u[1]) else 0
     
     if custom_texts and isinstance(custom_texts, list) and len(custom_texts) == 3:
-        fractions = [0.20, 0.50, 0.80]
+        fractions = [0.20, 0.50, 0.90]
         for i, (frac, text_val) in enumerate(zip(fractions, custom_texts)):
             # Posicionamento das três medidas (10%, 50%, 90%)
             pt_along_edge = p1 + frac * (p2 - p1)

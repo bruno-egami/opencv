@@ -740,7 +740,15 @@ def compare_contours(
     # 5. Métricas de Axissimétricos (diâmetro/concentricidade)
     # Classificamos por proximidade circular ou shape_class
     photo_circularity = (4 * np.pi * photo_area) / (photo_poly.length ** 2) if photo_poly.length > 0 else 0
-    if shape_class == "axisymmetric" or photo_circularity > 0.85:
+    
+    # Calcular circularidade do CAD para evitar falso positivo com prismas quadrados (que possuem autovalores simétricos)
+    try:
+        cad_poly = Polygon(cad_contour_mm.reshape(-1, 2))
+        cad_circularity = (4 * np.pi * cad_poly.area) / (cad_poly.length ** 2) if cad_poly.length > 0 else 0
+    except Exception:
+        cad_circularity = 0.0
+
+    if shape_class == "axisymmetric" and cad_circularity > 0.85:
         xc_c, yc_c, d_cad = fit_circle(cad_contour_mm)
         xc_p, yc_p, d_pho = fit_circle(photo_contour_mm)
         
@@ -829,11 +837,29 @@ def generate_deviation_map(
     h_img, w_img = annotated.shape[:2]
     
     # Escala da fonte dinâmica baseada na resolução da imagem
-    font_scale = max(0.5, min(w_img, h_img) / 1800.0)
-    thickness = max(1, int(font_scale * 2))
+    font_scale = max(1.2, min(w_img, h_img) / 1200.0)
+    thickness = max(2, int(font_scale * 2.0))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    color_white = (255, 255, 255)
     
-    text_w = int(850 * font_scale)
-    text_h = int((380 if metrics else 160) * font_scale)
+    # Calcular largura e altura do texto dinamicamente baseados na maior linha de informação
+    test_text = "Desvio Medio: 99.999 mm (std: 99.999)"
+    (tw, th), baseline = cv2.getTextSize(test_text, font, font_scale, thickness)
+    
+    text_w = tw + int(50 * font_scale)
+    line_height = th + int(14 * font_scale)
+    # Calcular o número correto de linhas para a caixa de texto
+    num_lines = 2
+    if metrics:
+        num_lines += 4  # Hausdorff, Desvio Medio, IoU, Complexidade
+        if "diameter_photo_mm" in metrics:
+            num_lines += 3  # Dia Medido/CAD, Desvio Dia, Concentricidade
+        else:
+            num_lines += 3  # Largura, Profundidade, Area
+        if "n_holes_photo" in metrics and metrics["n_holes_cad"] > 0:
+            num_lines += 1  # Furos
+            
+    text_h = num_lines * line_height + int(20 * font_scale)
     
     x_start = int(25 * font_scale)
     y_start = int(25 * font_scale)
@@ -842,14 +868,12 @@ def generate_deviation_map(
     cv2.rectangle(overlay, (x_start, y_start), (x_start + text_w, y_start + text_h), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.65, annotated, 0.35, 0, annotated)
     
-    y_offset = y_start + int(35 * font_scale)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    color_white = (255, 255, 255)
+    y_offset = y_start + th + int(15 * font_scale)
     
     def put_text(text, color=color_white):
         nonlocal y_offset
         cv2.putText(annotated, text, (x_start + int(15 * font_scale), y_offset), font, font_scale, color, thickness, cv2.LINE_AA)
-        y_offset += int(28 * font_scale)
+        y_offset += line_height
         
     put_text("COMPARACAO COM MODELO CAD", (0, 255, 255))
     put_text(f"Tolerancia Limite: {tolerance_mm:.2f} mm")
@@ -881,16 +905,16 @@ def generate_deviation_map(
             put_text(f"Furos (Foto/CAD): {metrics['n_holes_photo']}/{metrics['n_holes_cad']} (IoU: {metrics.get('holes_iou', 0.0):.3f})")
             
     # 2. Desenha o contorno da foto em Ciano (sólido)
-    contour_thickness = max(1, int(3 * font_scale))
+    contour_thickness = max(6, int(6 * font_scale))
     cv2.polylines(annotated, [photo_contour_px.astype(np.int32)], isClosed=True, color=(255, 255, 0), thickness=contour_thickness)
     
     # 3. Desenha os furos do CAD (se houverem) em Cinza tracejado/sólido
     if cad_holes_px:
         for hole in cad_holes_px:
-            cv2.polylines(annotated, [hole.astype(np.int32)], isClosed=True, color=(128, 128, 128), thickness=max(1, contour_thickness - 1))
+            cv2.polylines(annotated, [hole.astype(np.int32)], isClosed=True, color=(128, 128, 128), thickness=max(4, contour_thickness - 2))
             
     # 4. Desenha os pontos do contorno CAD como esferas coloridas baseadas no desvio local
-    circle_radius = max(2, int(4 * font_scale))
+    circle_radius = max(5, int(6 * font_scale))
     for i, p in enumerate(cad_contour_px):
         d = per_point_distances_mm[i]
         
@@ -904,17 +928,32 @@ def generate_deviation_map(
             
         cv2.circle(annotated, (int(round(p[0])), int(round(p[1]))), circle_radius, color, -1, cv2.LINE_AA)
         
-    # 5. Desenha a barra escala de cores de desvio no canto inferior esquerdo
-    scale_y = h_img - int(120 * font_scale)
+    # 5. Desenha a barra escala de cores de desvio no canto inferior esquerdo com box de fundo escuro
     bar_w = int(40 * font_scale)
     bar_h = int(25 * font_scale)
     
+    # Calcular largura e altura do fundo da legenda
+    legend_text_sample = f"{tolerance_mm * 0.5:.2f} - {tolerance_mm:.2f} mm (Alerta)"
+    (lw, lh), l_baseline = cv2.getTextSize(legend_text_sample, font, font_scale * 0.9, max(1, thickness - 1))
+    legend_w = bar_w + lw + int(45 * font_scale)
+    legend_h = 3 * (bar_h + int(10 * font_scale)) + int(10 * font_scale)
+    
+    legend_x = x_start
+    legend_y = h_img - legend_h - int(25 * font_scale)
+    
+    # Fundo escuro para a legenda
+    overlay_leg = annotated.copy()
+    cv2.rectangle(overlay_leg, (legend_x, legend_y), (legend_x + legend_w, legend_y + legend_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay_leg, 0.65, annotated, 0.35, 0, annotated)
+    
+    scale_y = legend_y + int(10 * font_scale)
+    
     def draw_scale_item(color, label_text):
         nonlocal scale_y
-        cv2.rectangle(annotated, (x_start, scale_y), (x_start + bar_w, scale_y + bar_h), color, -1)
+        cv2.rectangle(annotated, (legend_x + int(10 * font_scale), scale_y), (legend_x + int(10 * font_scale) + bar_w, scale_y + bar_h), color, -1)
         cv2.putText(
             annotated, label_text, 
-            (x_start + bar_w + int(15 * font_scale), scale_y + bar_h - int(5 * font_scale)), 
+            (legend_x + int(10 * font_scale) + bar_w + int(15 * font_scale), scale_y + bar_h - int(5 * font_scale)), 
             font, font_scale * 0.9, color_white, max(1, thickness - 1), cv2.LINE_AA
         )
         scale_y += bar_h + int(10 * font_scale)
@@ -929,3 +968,58 @@ def generate_deviation_map(
     logger.info(f"Mapa de desvio visual salvo em: {output_path}")
     
     return annotated
+
+
+def calculate_contour_profiles(contour_mm: np.ndarray) -> dict:
+    """Calcula os perfis de largura/comprimento de um contorno CAD em mm."""
+    import cv2
+    import numpy as np
+    from segmentation import _find_contour_line_intersections
+    
+    # Encontrar minAreaRect
+    min_rect = cv2.minAreaRect(contour_mm.astype(np.float32))
+    center, (rect_w, rect_h), angle = min_rect
+    
+    if rect_w >= rect_h:
+        major_len = rect_w
+        minor_len = rect_h
+        theta = np.radians(angle)
+    else:
+        major_len = rect_h
+        minor_len = rect_w
+        theta = np.radians(angle + 90)
+        
+    u_major = np.array([np.cos(theta), np.sin(theta)])
+    u_minor = np.array([-np.sin(theta), np.cos(theta)])
+    center_pt = np.array(center)
+    
+    pts = contour_mm.reshape(-1, 2)
+    
+    profiles = {}
+    positions = [i / 100.0 for i in range(0, 101, 5)]
+    
+    # Seções transversais ao longo do eixo maior (medem largura)
+    for pos in positions:
+        t = pos - 0.5
+        origin = center_pt + t * major_len * u_major
+        intersections = _find_contour_line_intersections(pts, origin, u_minor)
+        if len(intersections) >= 2:
+            intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_minor))
+            width = np.linalg.norm(intersections[-1] - intersections[0])
+            profiles[f"cross_width_{int(pos*100)}pct_mm"] = width
+        else:
+            profiles[f"cross_width_{int(pos*100)}pct_mm"] = 0.0
+            
+    # Seções transversais ao longo do eixo menor (medem comprimento)
+    for pos in positions:
+        t = pos - 0.5
+        origin = center_pt + t * minor_len * u_minor
+        intersections = _find_contour_line_intersections(pts, origin, u_major)
+        if len(intersections) >= 2:
+            intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_major))
+            length = np.linalg.norm(intersections[-1] - intersections[0])
+            profiles[f"cross_length_{int(pos*100)}pct_mm"] = length
+        else:
+            profiles[f"cross_length_{int(pos*100)}pct_mm"] = 0.0
+            
+    return profiles
