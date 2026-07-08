@@ -1056,7 +1056,10 @@ def compute_cross_sections(
 
     # Seções transversais ao longo do eixo MAIOR (medem LARGURA)
     for pos in positions:
-        t = pos - 0.5  # -0.4, 0.0, 0.4
+        pos_adj = pos
+        if pos == 0.0: pos_adj = 0.001
+        elif pos == 1.0: pos_adj = 0.999
+        t = pos_adj - 0.5  # -0.4, 0.0, 0.4
         origin = center_pt + t * major_len * u_major
 
         # Encontrar interseções do contorno com a reta perpendicular ao eixo maior
@@ -1077,7 +1080,10 @@ def compute_cross_sections(
 
     # Seções transversais ao longo do eixo MENOR (medem COMPRIMENTO)
     for pos in positions:
-        t = pos - 0.5
+        pos_adj = pos
+        if pos == 0.0: pos_adj = 0.001
+        elif pos == 1.0: pos_adj = 0.999
+        t = pos_adj - 0.5
         origin = center_pt + t * minor_len * u_minor
 
         intersections = _find_contour_line_intersections(pts, origin, u_major)

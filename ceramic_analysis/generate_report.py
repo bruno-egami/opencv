@@ -117,7 +117,15 @@ def format_cad_details_html(cad_c, view):
     return html
 
 
-def generate_profile_plot(measurements_list, output_path, title, y_label, prefix="cross_width_", nominal_value=None):
+def generate_profile_plot(
+    measurements_list,
+    output_path,
+    title,
+    y_label,
+    prefix="cross_width_",
+    nominal_value=None,
+    cad_profile_dict: dict = None
+):
     plt.figure(figsize=(10, 5))
     plt.style.use('dark_background')
     ax = plt.gca()
@@ -126,6 +134,9 @@ def generate_profile_plot(measurements_list, output_path, title, y_label, prefix
     
     percentages = list(range(0, 101, 5))
     has_data = False
+    
+    shape_class = cad_profile_dict.get("shape_class", "") if cad_profile_dict else ""
+    cad_view = cad_profile_dict.get("cad_view", "") if cad_profile_dict else ""
     
     for i, meas in enumerate(measurements_list):
         vals = []
@@ -147,15 +158,58 @@ def generate_profile_plot(measurements_list, output_path, title, y_label, prefix
         if vals:
             has_data = True
             label = meas.get("sample_id", f"Peça {i+1}")
-            plt.plot(valid_pcts, vals, marker='o', linestyle='-', linewidth=2, markersize=4, label=label)
+            
+            # Realiza interpolação suave (Pchip) apenas se for a vista superior de uma peça axissimétrica (cilindro)
+            if shape_class == "axisymmetric" and cad_view == "top" and len(valid_pcts) > 3:
+                from scipy.interpolate import PchipInterpolator
+                xp = np.array(valid_pcts)
+                yp = np.array(vals)
+                # Ordena os pontos para garantir consistência
+                sort_idx = np.argsort(xp)
+                xp = xp[sort_idx]
+                yp = yp[sort_idx]
+                
+                pchip = PchipInterpolator(xp, yp)
+                fine_x = np.linspace(xp[0], xp[-1], 200)
+                fine_y = pchip(fine_x)
+                
+                # Plota a linha suave e depois os pontos originais com a mesma cor
+                line, = plt.plot(fine_x, fine_y, linestyle='-', linewidth=2, label=label)
+                plt.scatter(xp, yp, marker='o', s=16, color=line.get_color(), zorder=3)
+            else:
+                plt.plot(valid_pcts, vals, marker='o', linestyle='-', linewidth=2, markersize=4, label=label)
             
     if not has_data:
         plt.close()
         return None
         
-    # Desenhar linha nominal de referência do CAD
-    if nominal_value is not None and nominal_value > 0:
-        plt.axhline(y=nominal_value, color='#ef4444', linestyle='--', linewidth=2, label=f"Nominal CAD ({nominal_value:.2f} mm)")
+    # Desenhar linha/curva nominal de referência do CAD
+    has_cad_profile = False
+    if cad_profile_dict:
+        cad_vals = []
+        for p in percentages:
+            key = f"cad_{prefix}{p}pct_mm"
+            val_str = cad_profile_dict.get(key, "")
+            if val_str != "":
+                cad_vals.append(float(val_str))
+            else:
+                cad_vals.append(0.0)
+        # Se contiver valores maiores que 0, plota a curva do CAD
+        if any(v > 0 for v in cad_vals):
+            if shape_class == "axisymmetric" and cad_view == "top":
+                # Desenha o arco analítico suave com alta resolução (200 pontos)
+                max_d = max(cad_vals)
+                fine_pcts = np.linspace(0, 100, 200)
+                t = 2.0 * (fine_pcts / 100.0) - 1.0
+                fine_vals = max_d * np.sqrt(np.clip(1.0 - t**2, 0.0, None))
+                plt.plot(fine_pcts, fine_vals, color='#ef4444', linestyle='--', linewidth=2.5, label="Nominal CAD (Modelo)")
+            else:
+                plt.plot(percentages, cad_vals, color='#ef4444', linestyle='--', linewidth=2.5, label="Nominal CAD (Modelo)")
+            has_cad_profile = True
+            
+    if not has_cad_profile and nominal_value is not None and nominal_value > 0:
+        # Usar plt.plot em vez de plt.axhline para limitar a linha estritamente de 0% a 100%
+        plt.plot([0, 100], [nominal_value, nominal_value], color='#ef4444', linestyle='--', linewidth=2, label=f"Nominal CAD ({nominal_value:.2f} mm)")
 
     plt.title(title, color='#f8fafc', pad=15)
     plt.xlabel('Posição ao longo da peça (%)', color='#94a3b8')
@@ -163,6 +217,7 @@ def generate_profile_plot(measurements_list, output_path, title, y_label, prefix
     plt.grid(color='#334155', linestyle='--', linewidth=0.5, alpha=0.7)
     plt.legend(facecolor='#1e293b', edgecolor='#475569', labelcolor='#f8fafc')
     plt.tick_params(colors='#94a3b8')
+    plt.xlim(-2, 102)  # Limitar o eixo X para 0-100% com pequena margem visual
     
     # Hide top and right spines
     ax.spines['top'].set_visible(False)
@@ -1163,10 +1218,20 @@ def generate_report(session_id: str, open_browser: bool = False):
     profile_top_html = ""
     if top_meas_list:
         plot_top_path = output_session_dir / f"profile_top_{session_id}.png"
-        res_top = generate_profile_plot(top_meas_list, str(plot_top_path), "Perfil de Variação de Largura (Vista Superior)", "Largura (mm)", prefix="cross_width_", nominal_value=nominal_width)
+        res_top = generate_profile_plot(
+            top_meas_list, str(plot_top_path),
+            "Perfil de Variação de Largura (Vista Superior)", "Largura (mm)",
+            prefix="cross_width_", nominal_value=nominal_width,
+            cad_profile_dict=top_cad
+        )
         
         plot_top_len_path = output_session_dir / f"profile_top_len_{session_id}.png"
-        res_top_len = generate_profile_plot(top_meas_list, str(plot_top_len_path), "Perfil de Variação de Comprimento (Vista Superior)", "Comprimento (mm)", prefix="cross_length_", nominal_value=nominal_len)
+        res_top_len = generate_profile_plot(
+            top_meas_list, str(plot_top_len_path),
+            "Perfil de Variação de Comprimento (Vista Superior)", "Comprimento (mm)",
+            prefix="cross_length_", nominal_value=nominal_len,
+            cad_profile_dict=top_cad
+        )
         
         if res_top:
             profile_top_html += f"""
@@ -1190,10 +1255,20 @@ def generate_report(session_id: str, open_browser: bool = False):
     profile_side_html = ""
     if side_meas_list:
         plot_side_path = output_session_dir / f"profile_side_{session_id}.png"
-        res_side = generate_profile_plot(side_meas_list, str(plot_side_path), "Perfil de Variação de Espessura (Vista Lateral)", "Espessura (mm)", prefix="cross_width_", nominal_value=nominal_thick)
+        res_side = generate_profile_plot(
+            side_meas_list, str(plot_side_path),
+            "Perfil de Variação de Espessura (Vista Lateral)", "Espessura (mm)",
+            prefix="cross_width_", nominal_value=nominal_thick,
+            cad_profile_dict=front_cad
+        )
         
         plot_side_len_path = output_session_dir / f"profile_side_len_{session_id}.png"
-        res_side_len = generate_profile_plot(side_meas_list, str(plot_side_len_path), "Perfil de Variação de Comprimento/Largura (Vista Lateral)", "Dimensão (mm)", prefix="cross_length_", nominal_value=nominal_side_w)
+        res_side_len = generate_profile_plot(
+            side_meas_list, str(plot_side_len_path),
+            "Perfil de Variação de Comprimento/Largura (Vista Lateral)", "Dimensão (mm)",
+            prefix="cross_length_", nominal_value=nominal_side_w,
+            cad_profile_dict=front_cad
+        )
         
         if res_side:
             profile_side_html += f"""

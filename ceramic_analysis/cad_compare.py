@@ -578,7 +578,17 @@ def register_contours(
     # Método ICP
     # Se a geometria é axisymmetric (ex: cilindros e cones circulares na vista top),
     # a rotação livre na projeção gera múltiplos equivalentes. Bloqueia-se a rotação.
-    allow_rotation = (shape_class != "axisymmetric")
+    # Para prismas quadrados (que têm autovalores simétricos), a silhueta não é circular,
+    # então permitimos rotação normalmente.
+    allow_rotation = True
+    if shape_class == "axisymmetric":
+        try:
+            cad_poly = Polygon(cad_contour_mm.reshape(-1, 2))
+            cad_circularity = (4 * np.pi * cad_poly.area) / (cad_poly.length ** 2) if cad_poly.length > 0 else 0
+            if cad_circularity > 0.95:
+                allow_rotation = False
+        except Exception:
+            allow_rotation = False
     
     if not allow_rotation:
         logger.info("Registro ICP: Geometria axissimétrica detectada. Registro limitado a translação apenas.")
@@ -593,8 +603,8 @@ def register_contours(
             "method_used": "icp_translation_only"
         }
         
-    # Para formas prismáticas ou orgânicas, testa orientações iniciais (0, 90, 180, 270)
-    # para evitar que o ICP convirja para mínimos locais.
+    # Para formas prismáticas ou orgânicas/não-circulares, testa orientações iniciais
+    # baseadas no ângulo do retângulo mínimo da foto, para evitar que o ICP convirja para mínimos locais.
     best_pts = None
     best_rms = float('inf')
     best_T = None
@@ -602,8 +612,24 @@ def register_contours(
     # Move para a origem para testar rotações iniciais limpas
     cad_temp = cad_contour_mm - c_cad
     
-    angles_deg = [0, 90, 180, 270] if shape_class == "prismatic" else [0]
-    
+    # Obter ângulo de rotação aproximado da foto pelo retângulo mínimo
+    try:
+        rect = cv2.minAreaRect(photo_contour_mm.astype(np.float32))
+        photo_angle = rect[2]
+    except Exception:
+        photo_angle = 0.0
+        
+    # Se a peça é prismática ou axissimétrica não-circular, testa as orientações absolutas
+    # (0, 90, 180, 270) e as orientações relativas baseadas no retângulo mínimo da foto.
+    # Se for outra classe de forma (orgânica), foca apenas na orientação inicial detectada.
+    if shape_class == "prismatic" or (shape_class == "axisymmetric" and allow_rotation):
+        angles_deg = [
+            0.0, 90.0, 180.0, 270.0,
+            photo_angle, photo_angle + 90.0, photo_angle + 180.0, photo_angle + 270.0
+        ]
+    else:
+        angles_deg = [photo_angle]
+        
     for angle in angles_deg:
         rad = np.radians(angle)
         cos_a, sin_a = np.cos(rad), np.sin(rad)
@@ -748,7 +774,7 @@ def compare_contours(
     except Exception:
         cad_circularity = 0.0
 
-    if shape_class == "axisymmetric" and cad_circularity > 0.85:
+    if shape_class == "axisymmetric" and cad_circularity > 0.95:
         xc_c, yc_c, d_cad = fit_circle(cad_contour_mm)
         xc_p, yc_p, d_pho = fit_circle(photo_contour_mm)
         
@@ -809,6 +835,7 @@ def generate_deviation_map(
     Gera uma imagem de mapa de desvios visualmente premium.
     O contorno CAD é plotado como um conjunto de pontos coloridos representando o desvio local.
     O contorno da foto física é desenhado em Ciano.
+    As métricas numéricas são exibidas apenas no relatório HTML.
     
     Args:
         photo_image: Imagem original (física) da peça
@@ -820,7 +847,7 @@ def generate_deviation_map(
         px_per_mm_v: Fator de escala vertical
         tolerance_mm: Limiar de tolerância geométrico (mm)
         cad_holes_px: Lista de contornos de furos do CAD em pixels
-        metrics: Dicionário com as métricas agregadas para plotagem da legenda
+        metrics: Dicionário com as métricas agregadas (usado apenas para referência)
         view: String com a vista ("top", "front", etc.)
         
     Returns:
@@ -832,77 +859,16 @@ def generate_deviation_map(
     else:
         annotated = photo_image.copy()
         
-    # 1. Desenha a legenda de métricas com fundo semi-transparente
-    overlay = annotated.copy()
+    # 1. Configuração de fonte e dimensões (usados pela legenda de cores)
     h_img, w_img = annotated.shape[:2]
     
     # Escala da fonte dinâmica baseada na resolução da imagem
-    font_scale = max(1.2, min(w_img, h_img) / 1200.0)
-    thickness = max(2, int(font_scale * 2.0))
+    font_scale = max(2.0, min(w_img, h_img) / 800.0)
+    thickness = max(2, int(font_scale * 1.5))
     font = cv2.FONT_HERSHEY_SIMPLEX
     color_white = (255, 255, 255)
     
-    # Calcular largura e altura do texto dinamicamente baseados na maior linha de informação
-    test_text = "Desvio Medio: 99.999 mm (std: 99.999)"
-    (tw, th), baseline = cv2.getTextSize(test_text, font, font_scale, thickness)
-    
-    text_w = tw + int(50 * font_scale)
-    line_height = th + int(14 * font_scale)
-    # Calcular o número correto de linhas para a caixa de texto
-    num_lines = 2
-    if metrics:
-        num_lines += 4  # Hausdorff, Desvio Medio, IoU, Complexidade
-        if "diameter_photo_mm" in metrics:
-            num_lines += 3  # Dia Medido/CAD, Desvio Dia, Concentricidade
-        else:
-            num_lines += 3  # Largura, Profundidade, Area
-        if "n_holes_photo" in metrics and metrics["n_holes_cad"] > 0:
-            num_lines += 1  # Furos
-            
-    text_h = num_lines * line_height + int(20 * font_scale)
-    
     x_start = int(25 * font_scale)
-    y_start = int(25 * font_scale)
-    
-    # Retângulo de fundo para o texto
-    cv2.rectangle(overlay, (x_start, y_start), (x_start + text_w, y_start + text_h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.65, annotated, 0.35, 0, annotated)
-    
-    y_offset = y_start + th + int(15 * font_scale)
-    
-    def put_text(text, color=color_white):
-        nonlocal y_offset
-        cv2.putText(annotated, text, (x_start + int(15 * font_scale), y_offset), font, font_scale, color, thickness, cv2.LINE_AA)
-        y_offset += line_height
-        
-    put_text("COMPARACAO COM MODELO CAD", (0, 255, 255))
-    put_text(f"Tolerancia Limite: {tolerance_mm:.2f} mm")
-    
-    if metrics:
-        put_text(f"Hausdorff Max: {metrics['hausdorff_mm']:.3f} mm")
-        put_text(f"Desvio Medio: {metrics['mean_deviation_mm']:.3f} mm (std: {metrics['deviation_std_mm']:.3f})")
-        put_text(f"IoU Alinhamento: {metrics['iou']:.3f}")
-        put_text(f"Complexidade da Forma: {metrics['shape_complexity']:.2f}")
-        
-        if "diameter_photo_mm" in metrics:
-            put_text(f"Dia. Medido/CAD: {metrics['diameter_photo_mm']:.2f}/{metrics['diameter_cad_mm']:.2f} mm")
-            put_text(f"Desvio Dia.: {metrics['diameter_deviation_mm']:+.3f} mm ({metrics['diameter_deviation_pct']:+.2f}%)")
-            put_text(f"Concentricidade: {metrics['concentricity_mm']:.3f} mm")
-        else:
-            w_label = "Largura (X)"
-            h_label = "Profundidade (Y)" if view == "top" else "Altura (Z)"
-            
-            cad_w = metrics.get('cad_bbox_w_mm', 0.0)
-            cad_h = metrics.get('cad_bbox_h_mm', 0.0)
-            meas_w = metrics.get('measured_bbox_w_mm', 0.0)
-            meas_h = metrics.get('measured_bbox_h_mm', 0.0)
-            
-            put_text(f"{w_label}: CAD {cad_w:.1f} | Real {meas_w:.1f} | Desvio {metrics.get('bbox_w_deviation_mm', 0.0):+.2f} mm ({metrics.get('bbox_w_deviation_pct', 0.0):+.1f}%)")
-            put_text(f"{h_label}: CAD {cad_h:.1f} | Real {meas_h:.1f} | Desvio {metrics.get('bbox_h_deviation_mm', 0.0):+.2f} mm ({metrics.get('bbox_h_deviation_pct', 0.0):+.1f}%)")
-            put_text(f"Area: CAD {metrics.get('cad_area_mm2', 0.0):.0f} | Real {metrics.get('measured_area_mm2', 0.0):.0f} | Desvio {metrics.get('area_deviation_pct', 0.0):+.1f}%")
-            
-        if "n_holes_photo" in metrics and metrics["n_holes_cad"] > 0:
-            put_text(f"Furos (Foto/CAD): {metrics['n_holes_photo']}/{metrics['n_holes_cad']} (IoU: {metrics.get('holes_iou', 0.0):.3f})")
             
     # 2. Desenha o contorno da foto em Ciano (sólido)
     contour_thickness = max(6, int(6 * font_scale))
@@ -928,7 +894,10 @@ def generate_deviation_map(
             
         cv2.circle(annotated, (int(round(p[0])), int(round(p[1]))), circle_radius, color, -1, cv2.LINE_AA)
         
-    # 5. Desenha a barra escala de cores de desvio no canto inferior esquerdo com box de fundo escuro
+    # 5. Desenha a barra escala de cores de desvio com box de fundo escuro
+    #    Posição inteligente: se a peça está na metade superior da imagem, coloca
+    #    a legenda no canto inferior esquerdo. Se está na metade inferior, coloca
+    #    no canto superior esquerdo.
     bar_w = int(40 * font_scale)
     bar_h = int(25 * font_scale)
     
@@ -938,8 +907,17 @@ def generate_deviation_map(
     legend_w = bar_w + lw + int(45 * font_scale)
     legend_h = 3 * (bar_h + int(10 * font_scale)) + int(10 * font_scale)
     
+    # Detectar a posição vertical do centróide da peça (contorno da foto)
+    piece_centroid_y = np.mean(photo_contour_px[:, 1])
+    piece_is_upper = piece_centroid_y < h_img / 2.0
+    
     legend_x = x_start
-    legend_y = h_img - legend_h - int(25 * font_scale)
+    if piece_is_upper:
+        # Peça na metade superior → legenda no canto inferior esquerdo
+        legend_y = h_img - legend_h - int(25 * font_scale)
+    else:
+        # Peça na metade inferior → legenda no canto superior esquerdo
+        legend_y = int(25 * font_scale)
     
     # Fundo escuro para a legenda
     overlay_leg = annotated.copy()
@@ -971,9 +949,18 @@ def generate_deviation_map(
 
 
 def calculate_contour_profiles(contour_mm: np.ndarray) -> dict:
-    """Calcula os perfis de largura/comprimento de um contorno CAD em mm."""
+    """Calcula os perfis de largura/comprimento de um contorno CAD em mm.
+    
+    Para contornos circulares (circularidade > 0.95), utiliza a fórmula analítica
+    de corda do círculo: chord(pos) = D * sqrt(1 - (2*pos - 1)²), que produz
+    um arco suave e matematicamente exato de 0% a 100%.
+    
+    Para contornos prismáticos, utiliza interseção por raios transversais,
+    que produz linhas retas constantes (largura/comprimento uniformes).
+    """
     import cv2
     import numpy as np
+    from shapely.geometry import Polygon as ShapelyPolygon
     from segmentation import _find_contour_line_intersections
     
     # Encontrar minAreaRect
@@ -995,31 +982,75 @@ def calculate_contour_profiles(contour_mm: np.ndarray) -> dict:
     
     pts = contour_mm.reshape(-1, 2)
     
+    # Detectar se o contorno é circular
+    try:
+        poly = ShapelyPolygon(pts)
+        circularity = (4 * np.pi * poly.area) / (poly.length ** 2) if poly.length > 0 else 0
+    except Exception:
+        circularity = 0.0
+    
+    is_circular = circularity > 0.90
+    
     profiles = {}
     positions = [i / 100.0 for i in range(0, 101, 5)]
     
-    # Seções transversais ao longo do eixo maior (medem largura)
-    for pos in positions:
-        t = pos - 0.5
-        origin = center_pt + t * major_len * u_major
-        intersections = _find_contour_line_intersections(pts, origin, u_minor)
-        if len(intersections) >= 2:
-            intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_minor))
-            width = np.linalg.norm(intersections[-1] - intersections[0])
-            profiles[f"cross_width_{int(pos*100)}pct_mm"] = width
-        else:
-            profiles[f"cross_width_{int(pos*100)}pct_mm"] = 0.0
+    if is_circular:
+        # Para contornos circulares, usar fórmula analítica de corda
+        # O diâmetro é a média entre major_len e minor_len (para elipses leves)
+        diameter_w = minor_len  # largura = corda perpendicular ao eixo maior
+        diameter_l = major_len  # comprimento = corda perpendicular ao eixo menor
+        
+        for pos in positions:
+            pct = int(pos * 100)
+            # Normalizar posição: pos=0 → borda, pos=0.5 → centro, pos=1 → borda oposta
+            t = 2.0 * pos - 1.0  # mapeamento para [-1, +1]
             
-    # Seções transversais ao longo do eixo menor (medem comprimento)
-    for pos in positions:
-        t = pos - 0.5
-        origin = center_pt + t * minor_len * u_minor
-        intersections = _find_contour_line_intersections(pts, origin, u_major)
-        if len(intersections) >= 2:
-            intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_major))
-            length = np.linalg.norm(intersections[-1] - intersections[0])
-            profiles[f"cross_length_{int(pos*100)}pct_mm"] = length
-        else:
-            profiles[f"cross_length_{int(pos*100)}pct_mm"] = 0.0
+            # Corda do círculo: chord = D * sqrt(1 - t²)
+            # Em 0% e 100%, t = ±1, logo chord = 0 (borda tangente)
+            t_clamped = max(-1.0, min(1.0, t))
             
+            # Largura (seção ao longo do eixo maior, mede a dimensão menor)
+            chord_w = diameter_w * np.sqrt(max(0.0, 1.0 - t_clamped ** 2))
+            profiles[f"cross_width_{pct}pct_mm"] = chord_w
+            
+            # Comprimento (seção ao longo do eixo menor, mede a dimensão maior)
+            chord_l = diameter_l * np.sqrt(max(0.0, 1.0 - t_clamped ** 2))
+            profiles[f"cross_length_{pct}pct_mm"] = chord_l
+    else:
+        # Para contornos prismáticos, usar interseção por raios transversais
+        # Seções transversais ao longo do eixo maior (medem largura)
+        for pos in positions:
+            pos_adj = pos
+            if pos == 0.0:
+                pos_adj = 0.001
+            elif pos == 1.0:
+                pos_adj = 0.999
+            t = pos_adj - 0.5
+            origin = center_pt + t * major_len * u_major
+            intersections = _find_contour_line_intersections(pts, origin, u_minor)
+            if len(intersections) >= 2:
+                intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_minor))
+                width = np.linalg.norm(intersections[-1] - intersections[0])
+                profiles[f"cross_width_{int(pos*100)}pct_mm"] = width
+            else:
+                profiles[f"cross_width_{int(pos*100)}pct_mm"] = 0.0
+                
+        # Seções transversais ao longo do eixo menor (medem comprimento)
+        for pos in positions:
+            pos_adj = pos
+            if pos == 0.0:
+                pos_adj = 0.001
+            elif pos == 1.0:
+                pos_adj = 0.999
+            t = pos_adj - 0.5
+            origin = center_pt + t * minor_len * u_minor
+            intersections = _find_contour_line_intersections(pts, origin, u_major)
+            if len(intersections) >= 2:
+                intersections = sorted(intersections, key=lambda p: np.dot(p - origin, u_major))
+                length = np.linalg.norm(intersections[-1] - intersections[0])
+                profiles[f"cross_length_{int(pos*100)}pct_mm"] = length
+            else:
+                profiles[f"cross_length_{int(pos*100)}pct_mm"] = 0.0
+                
     return profiles
+
