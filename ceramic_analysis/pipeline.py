@@ -85,6 +85,7 @@ def create_session_structure(session_id: str) -> Path:
 
     dirs = [
         session_dir / "cad",
+        session_dir / "perspective",
         session_dir / "background" / "top",
         session_dir / "background" / "side",
         session_dir / "raw" / "wet" / "top",

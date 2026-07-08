@@ -518,6 +518,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
         </section>
 
+        {perspective_section_html}
+
         <!-- Comparador de Imagens -->
         <section class="tabs-container">
             <h2 class="section-title">Análise Visual e Desvios</h2>
@@ -650,6 +652,78 @@ def generate_report(session_id: str, open_browser: bool = False):
     if not measurements:
         print("Nenhuma medição encontrada para gerar o relatório.")
         return
+
+    output_session_dir = Path(config.OUTPUT_DIR) / session_id
+    output_session_dir.mkdir(parents=True, exist_ok=True)
+
+    # Procurar por fotos de perspectiva no diretório da sessão
+    session_dir = Path(config.SESSIONS_DIR) / f"session_{session_id}"
+    perspective_images = []
+    img_extensions = [".jpg", ".jpeg", ".png", ".webp"]
+    
+    # 1. Procurar na pasta "perspective"
+    perspective_dir = session_dir / "perspective"
+    if perspective_dir.exists():
+        for ext in img_extensions:
+            found = list(perspective_dir.glob(f"*{ext}"))
+            for f in found:
+                if f.name.lower() != "desktop.ini":
+                    perspective_images.append(f)
+                    
+    # 2. Procurar na raiz da sessão por nomes específicos
+    if not perspective_images:
+        names_to_try = ["perspective", "perspectiva", "photo", "foto", "peca", "peça"]
+        for name in names_to_try:
+            for ext in img_extensions:
+                found = session_dir / f"{name}{ext}"
+                if found.exists():
+                    perspective_images.append(found)
+                    break
+            if perspective_images:
+                break
+                
+    # 3. Copiar para o diretório de output se encontrado
+    copied_images = []
+    if perspective_images:
+        output_perspective_dir = output_session_dir / "perspective"
+        output_perspective_dir.mkdir(parents=True, exist_ok=True)
+        import shutil
+        for src_img in perspective_images:
+            dest_img = output_perspective_dir / src_img.name
+            try:
+                shutil.copy2(src_img, dest_img)
+                copied_images.append(f"perspective/{src_img.name}")
+                logger.info(f"Foto em perspectiva copiada para: {dest_img}")
+            except Exception as copy_err:
+                logger.warning(f"Erro ao copiar foto em perspectiva {src_img.name}: {copy_err}")
+                
+    # 4. Construir o HTML da seção de perspectiva se houver imagens
+    perspective_section_html = ""
+    if copied_images:
+        cards_html = ""
+        for img_rel_path in copied_images:
+            filename = Path(img_rel_path).name
+            cards_html += f"""
+                <div class="card" style="padding: 1.5rem; backdrop-filter: blur(12px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem;">
+                    <div class="img-container" style="width: 100%; aspect-ratio: 4/3; border-radius: 8px; overflow: hidden; background: #0b0f19; display: flex; align-items: center; justify-content: center; border: 1px solid var(--glass-border);">
+                        <img src="{img_rel_path}" alt="Foto em Perspectiva" style="max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.3s ease;">
+                    </div>
+                    <div style="font-size: 0.9rem; color: var(--text-secondary); text-align: center; font-family: 'Outfit', sans-serif; font-weight: 500;">
+                        {filename}
+                    </div>
+                </div>"""
+        
+        perspective_section_html = f"""
+        <!-- Registro Visual em Perspectiva -->
+        <section style="margin-top: 3rem;">
+            <h2 class="section-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #60a5fa; margin-right: 0.5rem; display: inline-block; vertical-align: middle;"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                Geometria e Qualidade Geral da Impressão (Perspectiva)
+            </h2>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+                {cards_html}
+            </div>
+        </section>"""
 
     # Determinar qual estado mostrar (preferir 'dry' se houver, senão 'wet')
     available_states = set(m.get("state") for m in measurements)
@@ -1165,6 +1239,7 @@ def generate_report(session_id: str, open_browser: bool = False):
         side_rows_html=side_rows_html,
         angle_rows_html=angle_rows_html,
         cross_section_rows_html=cross_section_rows_html,
+        perspective_section_html=perspective_section_html,
     )
 
     output_session_dir = Path(config.OUTPUT_DIR) / session_id
