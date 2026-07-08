@@ -304,9 +304,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .session-badge {{
             background: rgba(59, 130, 246, 0.2);
             border: 1px solid rgba(59, 130, 246, 0.4);
-            padding: 0.5rem 1rem;
+            padding: 0.6rem 1.2rem;
             border-radius: 9999px;
             font-family: 'Outfit', sans-serif;
+            font-size: 1.15rem;
             font-weight: 600;
             color: #60a5fa;
         }}
@@ -550,32 +551,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         {summary_area_html}
 
-        <!-- Comparador de Imagens -->
-        <section class="tabs-container">
-            <h2 class="section-title">Análise Visual e Desvios</h2>
-            <div class="tab-buttons">
-                <button class="tab-btn active" onclick="openTab('tab-top')">Vista Superior (Top)</button>
-                <button class="tab-btn" onclick="openTab('tab-side')">Vista Lateral (Side)</button>
-            </div>
-
-            <!-- Tab Vista Superior -->
-            <div id="tab-top" class="tab-content active">
-                <div class="comparison-layout">
-                    {annotated_top_cards_html}
-                    {deviation_top_cards_html}
-                </div>
-                {profile_top_html}
-            </div>
-
-            <!-- Tab Vista Lateral -->
-            <div id="tab-side" class="tab-content">
-                <div class="comparison-layout">
-                    {annotated_side_cards_html}
-                    {deviation_side_cards_html}
-                </div>
-                {profile_side_html}
-            </div>
-        </section>
+        {visual_analysis_sections_html}
 
         <!-- Tabela Completa de Medições -->
         <section>
@@ -633,25 +609,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         <footer class="footer">
             <p>Gerado automaticamente pelo Pipeline de Metrologia OpenCV - Mestrado em Engenharia de Materiais (IFRS)</p>
+            <p style="margin-top: 0.5rem; font-weight: 500;">Desenvolvido por Bruno Egami - disponível em: <a href="https://github.com/bruno-egami/opencv/tree/4.x" target="_blank" style="color: #60a5fa; text-decoration: none;">https://github.com/bruno-egami/opencv/tree/4.x</a></p>
             <p style="margin-top: 0.5rem; opacity: 0.5;">Data de geração: 2026</p>
         </footer>
     </div>
-
-    <script>
-        function openTab(tabId) {{
-            // Esconder todos os conteúdos
-            const contents = document.querySelectorAll('.tab-content');
-            contents.forEach(content => content.classList.remove('active'));
-
-            // Remover classe active de todos os botões
-            const buttons = document.querySelectorAll('.tab-btn');
-            buttons.forEach(btn => btn.classList.remove('active'));
-
-            // Mostrar a aba selecionada e adicionar active no botão
-            document.getElementById(tabId).classList.add('active');
-            event.currentTarget.classList.add('active');
-        }}
-    </script>
 </body>
 </html>
 """
@@ -1377,6 +1338,38 @@ def generate_report(session_id: str, open_browser: bool = False):
                 </div>
             """
 
+    visual_analysis_sections_html = ""
+    if annotated_top_cards_html or deviation_top_cards_html or profile_top_html:
+        visual_analysis_sections_html += f"""
+        <!-- Análise da Vista Superior (Top) -->
+        <section>
+            <h2 class="section-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #60a5fa; margin-right: 0.5rem; display: inline-block; vertical-align: middle;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                Análise Visual e Desvios - Vista Superior (Top)
+            </h2>
+            <div class="comparison-layout">
+                {annotated_top_cards_html}
+                {deviation_top_cards_html}
+            </div>
+            {profile_top_html}
+        </section>"""
+        
+    if annotated_side_cards_html or deviation_side_cards_html or profile_side_html:
+        spacing = 'style="margin-top: 3rem;"' if visual_analysis_sections_html else ""
+        visual_analysis_sections_html += f"""
+        <!-- Análise da Vista Lateral (Side) -->
+        <section {spacing}>
+            <h2 class="section-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #34d399; margin-right: 0.5rem; display: inline-block; vertical-align: middle;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line></svg>
+                Análise Visual e Desvios - Vista Lateral (Side)
+            </h2>
+            <div class="comparison-layout">
+                {annotated_side_cards_html}
+                {deviation_side_cards_html}
+            </div>
+            {profile_side_html}
+        </section>"""
+
     html_content = HTML_TEMPLATE.format(
         session=session_id,
         state_name=state_name,
@@ -1386,12 +1379,6 @@ def generate_report(session_id: str, open_browser: bool = False):
         thickness=thickness_str,
         dim_side_w=dim_side_w_str,
         scale_v=scale_v,
-        annotated_top_cards_html=annotated_top_cards_html,
-        annotated_side_cards_html=annotated_side_cards_html,
-        profile_top_html=profile_top_html,
-        profile_side_html=profile_side_html,
-        deviation_top_cards_html=deviation_top_cards_html,
-        deviation_side_cards_html=deviation_side_cards_html,
         cad_th_html=cad_th_html,
         cad_len_td_html=cad_len_td_html,
         cad_width_td_html=cad_width_td_html,
@@ -1400,6 +1387,7 @@ def generate_report(session_id: str, open_browser: bool = False):
         angle_rows_html=angle_rows_html,
         cross_section_rows_html=cross_section_rows_html,
         summary_area_html=summary_area_html,
+        visual_analysis_sections_html=visual_analysis_sections_html,
     )
 
     output_session_dir = Path(config.OUTPUT_DIR) / session_id
