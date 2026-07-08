@@ -548,32 +548,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
         </header>
 
-        <!-- Resumo das Principais Métricas -->
-        <section>
-            <h2 class="section-title">Resumo Metrológico</h2>
-            <div class="metrics-grid">
-                <div class="card" style="grid-column: span 2;">
-                    <div class="card-title">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-                        Dimensões da Peça (C × L × E)
-                    </div>
-                    <div class="card-value" style="font-size: 1.25rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
-                        <span>{dim_top_len}</span>
-                        <span style="color: var(--text-secondary);">×</span>
-                        <span>{dim_top_width}</span>
-                        <span style="color: var(--text-secondary);">×</span>
-                        <span>{thickness}</span>
-                    </div>
-                </div>
-
-                {cad_card_html}
-            </div>
-            <div style="margin-top: 3rem; color: var(--text-secondary); font-size: 0.85rem; text-align: center; border-top: 1px solid var(--glass-border); padding-top: 1rem;">
-                Média de Escala: {scale_h:.2f} px/mm (Anisotropia: {anisotropy:.1%})
-            </div>
-        </section>
-
-        {perspective_section_html}
+        {summary_area_html}
 
         <!-- Comparador de Imagens -->
         <section class="tabs-container">
@@ -770,7 +745,7 @@ def generate_report(session_id: str, open_browser: bool = False):
         
         perspective_section_html = f"""
         <!-- Registro Visual em Perspectiva -->
-        <section style="margin-top: 3rem;">
+        <section style="margin-top: 3rem; max-width: 600px;">
             <h2 class="section-title">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #60a5fa; margin-right: 0.5rem; display: inline-block; vertical-align: middle;"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
                 Geometria e Qualidade Geral da Impressão (Perspectiva)
@@ -941,7 +916,7 @@ def generate_report(session_id: str, open_browser: bool = False):
 
     # --- Construir HTML condicional: CAD card ---
     if has_cad:
-        cad_card_html = f"""<div class="card">
+        cad_card_html = f"""<div class="card" style="margin: 0; width: 100%;">
                     <div class="card-title">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
                         Precisão CAD (IoU)
@@ -951,6 +926,119 @@ def generate_report(session_id: str, open_browser: bool = False):
                 </div>"""
     else:
         cad_card_html = ""
+
+    # --- Construir HTML da Área de Resumo (Dimensões + CAD e/ou Perspectiva) ---
+    scale_footer_html = f"""
+            <div style="margin-top: 2rem; color: var(--text-secondary); font-size: 0.85rem; text-align: center; border-top: 1px solid var(--glass-border); padding-top: 1rem;">
+                Média de Escala: {scale_h:.2f} px/mm (Anisotropia: {anisotropy:.1%})
+            </div>
+    """
+    
+    dimensions_card_html = f"""
+                        <div class="card" style="margin: 0; width: 100%;">
+                            <div class="card-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                                Dimensões da Peça (C × L × E)
+                            </div>
+                            <div class="card-value" style="font-size: 1.75rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0;">
+                                <span>{dim_top_len_str}</span>
+                                <span style="color: var(--text-secondary);">×</span>
+                                <span>{dim_top_width_str}</span>
+                                <span style="color: var(--text-secondary);">×</span>
+                                <span>{thickness_str}</span>
+                            </div>
+                        </div>
+    """
+    
+    if has_cad:
+        cad_dimensions_card_html = f"""
+                        <div class="card" style="margin: 0; width: 100%;">
+                            <div class="card-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z"></path><polyline points="3 7 12 13 21 7"></polyline></svg>
+                                Dimensões Nominais CAD (C × L × E)
+                            </div>
+                            <div class="card-value" style="font-size: 1.75rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0;">
+                                <span>{nominal_len:.2f} mm</span>
+                                <span style="color: var(--text-secondary);">×</span>
+                                <span>{nominal_width:.2f} mm</span>
+                                <span style="color: var(--text-secondary);">×</span>
+                                <span>{nominal_thick:.2f} mm</span>
+                            </div>
+                        </div>
+        """
+    else:
+        cad_dimensions_card_html = ""
+
+    if copied_images:
+        # Layout Lado a Lado (Foto de Perspectiva à esquerda + Resumo Metrológico à direita em 3 linhas)
+        perspective_cards_html = ""
+        for img_rel_path in copied_images:
+            filename = Path(img_rel_path).name
+            perspective_cards_html += f"""
+                <div class="card" style="padding: 1rem; backdrop-filter: blur(12px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; margin: 0; height: 100%;">
+                    <div class="img-container" style="width: 100%; aspect-ratio: 4/3; border-radius: 8px; overflow: hidden; background: #0b0f19; display: flex; align-items: center; justify-content: center; border: 1px solid var(--glass-border);">
+                        <img src="{img_rel_path}" alt="Foto em Perspectiva" style="max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.3s ease;">
+                    </div>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary); text-align: center; font-family: 'Outfit', sans-serif; font-weight: 500;">
+                        {filename}
+                    </div>
+                </div>"""
+                
+        summary_area_html = f"""
+        <!-- Resumo Metrológico e Registro Visual (Lado a Lado) -->
+        <section>
+            <div style="display: flex; gap: 2rem; flex-wrap: wrap; align-items: stretch; margin-bottom: 1rem;">
+                <!-- Coluna Esquerda: Foto em Perspectiva -->
+                <div style="flex: 1.2; min-width: 320px; max-width: 550px; display: flex; flex-direction: column;">
+                    <h2 class="section-title" style="margin-bottom: 1.2rem; font-size: 1.2rem; border: none; padding: 0;">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #60a5fa; margin-right: 0.5rem; display: inline-block; vertical-align: middle;"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                        Geometria e Qualidade Geral (Perspectiva)
+                    </h2>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; flex-grow: 1;">
+                        {perspective_cards_html}
+                    </div>
+                </div>
+                <!-- Coluna Direita: Resumo Metrológico (Dimensões e Precisão) -->
+                <div style="flex: 1; min-width: 320px; display: flex; flex-direction: column;">
+                    <h2 class="section-title" style="margin-bottom: 1.2rem; font-size: 1.2rem; border: none; padding: 0;">
+                        Resumo Metrológico
+                    </h2>
+                    <div style="display: flex; flex-direction: column; gap: 1rem; flex-grow: 1; justify-content: space-between;">
+                        {dimensions_card_html}
+                        {cad_dimensions_card_html}
+                        {cad_card_html}
+                    </div>
+                </div>
+            </div>
+            {scale_footer_html}
+        </section>"""
+    else:
+        # Layout Clássico (Apenas Resumo Metrológico em Grid de 100%)
+        dim_card_span = "grid-column: span 2;" if not has_cad else ""
+        
+        summary_area_html = f"""
+        <!-- Resumo das Principais Métricas -->
+        <section>
+            <h2 class="section-title">Resumo Metrológico</h2>
+            <div class="metrics-grid">
+                <div class="card" style="{dim_card_span} margin: 0; width: 100%;">
+                    <div class="card-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                        Dimensões da Peça (C × L × E)
+                    </div>
+                    <div class="card-value" style="font-size: 1.75rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0;">
+                        <span>{dim_top_len_str}</span>
+                        <span style="color: var(--text-secondary);">×</span>
+                        <span>{dim_top_width_str}</span>
+                        <span style="color: var(--text-secondary);">×</span>
+                        <span>{thickness_str}</span>
+                    </div>
+                </div>
+                {cad_dimensions_card_html}
+                {cad_card_html}
+            </div>
+            {scale_footer_html}
+        </section>"""
 
     # --- Construir HTML condicional: colunas CAD na tabela ---
     if has_cad:
@@ -1297,16 +1385,13 @@ def generate_report(session_id: str, open_browser: bool = False):
         area_top=area_top_str,
         thickness=thickness_str,
         dim_side_w=dim_side_w_str,
-        scale_h=scale_h,
         scale_v=scale_v,
-        anisotropy=anisotropy,
         annotated_top_cards_html=annotated_top_cards_html,
         annotated_side_cards_html=annotated_side_cards_html,
         profile_top_html=profile_top_html,
         profile_side_html=profile_side_html,
         deviation_top_cards_html=deviation_top_cards_html,
         deviation_side_cards_html=deviation_side_cards_html,
-        cad_card_html=cad_card_html,
         cad_th_html=cad_th_html,
         cad_len_td_html=cad_len_td_html,
         cad_width_td_html=cad_width_td_html,
@@ -1314,7 +1399,7 @@ def generate_report(session_id: str, open_browser: bool = False):
         side_rows_html=side_rows_html,
         angle_rows_html=angle_rows_html,
         cross_section_rows_html=cross_section_rows_html,
-        perspective_section_html=perspective_section_html,
+        summary_area_html=summary_area_html,
     )
 
     output_session_dir = Path(config.OUTPUT_DIR) / session_id
