@@ -150,6 +150,31 @@ def detect_orientation(mesh: trimesh.Trimesh, symmetry_threshold: float = 0.05) 
     # Calcula as dimensões (extents) após alinhar a malha
     aligned_mesh = mesh.copy()
     aligned_mesh.apply_transform(rotation_matrix)
+    
+    # Se classificou como axisymmetric, vamos validar a circularidade projetando os vértices no plano da seção transversal do aligned_mesh
+    if shape_class == "axisymmetric":
+        if symmetry_axis == 0:
+            coords = aligned_mesh.vertices[:, 1:3]  # Y, Z
+        else:
+            coords = aligned_mesh.vertices[:, 0:2]  # X, Y
+            
+        try:
+            from scipy.spatial import ConvexHull
+            hull = ConvexHull(coords)
+            # A área e perímetro do convex hull (em 2D, volume=área, area=perímetro)
+            hull_area = hull.volume
+            hull_perimeter = hull.area
+            circularity = (4 * np.pi * hull_area) / (hull_perimeter ** 2) if hull_perimeter > 0 else 0.0
+            
+            # Se a circularidade do convex hull for baixa (menor que 0.90), então é um prisma regular (ex: quadrado)
+            if circularity < 0.90:
+                shape_class = "prismatic"
+                is_symmetric = False
+                symmetry_axis = None
+                logger.info(f"Reclassificado de AXISYMMETRIC para PRISMATIC. Circularidade do convex hull: {circularity:.3f}")
+        except Exception as e:
+            logger.warning(f"Erro ao validar circularidade do CAD com ConvexHull: {e}")
+
     extents_mm = aligned_mesh.bounds[1] - aligned_mesh.bounds[0]
     
     return {

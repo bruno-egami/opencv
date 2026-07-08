@@ -27,6 +27,20 @@ def _enhance_contrast(image):
     return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
 
 
+
+def maximize_window(window_title: str):
+    """Maximiza uma janela OpenCV programaticamente (com suporte nativo a Windows)."""
+    import sys
+    if sys.platform == "win32":
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW(None, window_title)
+            if hwnd:
+                # SW_MAXIMIZE = 3
+                ctypes.windll.user32.ShowWindow(hwnd, 3)
+        except Exception:
+            pass
+
+
 class InteractiveContourEditor:
     def __init__(self, image, auto_contour, window_title="Ajuste de Contorno"):
         self.img_original = image.copy()
@@ -204,6 +218,7 @@ class InteractiveContourEditor:
         cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
         cv2.waitKey(100)
+        maximize_window(self.window_title)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
@@ -465,6 +480,7 @@ class InteractiveSeedPointCollector:
         cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
         cv2.waitKey(100)
+        maximize_window(self.window_title)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
@@ -849,6 +865,7 @@ class Interactive4CornerSelector:
         cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
         cv2.waitKey(100)
+        maximize_window(self.window_title)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
@@ -978,6 +995,7 @@ class InteractiveHomographyGridEditor(Interactive4CornerSelector):
         cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
         cv2.waitKey(100)
+        maximize_window(self.window_title)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
@@ -1242,6 +1260,7 @@ class InteractiveCheckerboardGridEditor:
         cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
         cv2.waitKey(100)
+        maximize_window(self.window_title)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
@@ -1564,6 +1583,7 @@ class InteractiveROISelector:
         cv2.setWindowProperty(self.window_title, cv2.WND_PROP_TOPMOST, 1)
         cv2.resizeWindow(self.window_title, self.window_width, self.window_height)
         cv2.waitKey(100)
+        maximize_window(self.window_title)
         cv2.setMouseCallback(
             self.window_title,
             lambda event, x, y, flags, param: self.mouse_callback(event, x, y, flags, param)
